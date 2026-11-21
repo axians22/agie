@@ -75,12 +75,12 @@ export interface UsuarioSessao {
   pessoaId: number | null;
 }
 
-/** O papel nunca é gravado: vem da lista de admins ou do e-mail na ficha da pessoa, a cada requisição. */
-export function resolverPapel(db: DatabaseSync, config: Config, email: string): { papel: Papel; pessoaId: number | null } | null {
+/** Toda conta Google entra. O papel nunca é gravado: quem não é admin é usuário e só vê a ficha com o próprio e-mail. */
+export function resolverPapel(db: DatabaseSync, config: Config, email: string): { papel: Papel; pessoaId: number | null } {
   const e = normalizarEmail(email);
   if (config.adminEmails.has(e) || db.prepare('SELECT 1 FROM admins WHERE email = ?').get(e)) return { papel: 'admin', pessoaId: null };
   const p = db.prepare('SELECT id FROM pessoas WHERE lower(email) = ?').get(e) as { id: number } | undefined;
-  return p ? { papel: 'devedor', pessoaId: p.id } : null;
+  return { papel: 'devedor', pessoaId: p?.id ?? null };
 }
 
 export function hashToken(token: string): string {
@@ -126,10 +126,6 @@ export function validarSessao(
     return null;
   }
   const papel = resolverPapel(db, config, s.email);
-  if (!papel) {
-    db.prepare('DELETE FROM sessoes WHERE usuario_id = ?').run(s.id);
-    return null;
-  }
   let renovadaAte: Date | null = null;
   const ttl = SESSAO_DIAS * DIA_MS;
   if (s.expira - agora.getTime() < ttl / 2) {

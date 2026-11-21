@@ -9,7 +9,6 @@ import {
   ErroGoogle,
   nomeCookie,
   registrarLogin,
-  resolverPapel,
   revogarSessao,
   validarSessao,
   type UsuarioSessao,
@@ -194,9 +193,6 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   };
 
   function entrar(c: Context, identidade: { email: string; nome: string | null; avatarUrl: string | null }) {
-    if (!resolverPapel(db, config, identidade.email)) {
-      throw new ErroHttp(403, 'SEM_ACESSO', 'Esta conta não tem acesso. Peça ao credor para cadastrar seu e-mail.');
-    }
     const momento = agora();
     const usuarioId = registrarLogin(db, identidade, momento);
     const { token, expira } = criarSessao(db, usuarioId, momento);
@@ -267,7 +263,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   });
   app.use('/api/devedor/*', async (c, next) => {
     const u = c.get('usuario');
-    if (u.papel !== 'devedor' || !u.pessoaId) throw new ErroHttp(403, 'PROIBIDO', 'Acesso negado.');
+    if (u.papel !== 'devedor') throw new ErroHttp(403, 'PROIBIDO', 'Acesso negado.');
     await next();
   });
 
@@ -291,9 +287,8 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
       }
       entrar(c, await verificarGoogle(form.credential));
       return c.redirect('/', 303);
-    } catch (e) {
-      const acesso = e instanceof ErroHttp && e.codigo === 'SEM_ACESSO';
-      return c.redirect(`/entrar?erro=${acesso ? 'acesso' : 'login'}`, 303);
+    } catch {
+      return c.redirect('/entrar?erro=login', 303);
     }
   });
 
@@ -307,7 +302,8 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   app.get('/api/auth/me', (c) => c.json({ usuario: dtoUsuario(c.get('usuario')), pixDisponivel: !!repo.pixConfig() }));
 
   // ---------- Devedor: sempre filtrado pela pessoa da sessão ----------
-  const doDevedor = (c: Context<Ambiente>) => c.get('usuario').pessoaId!;
+  // Sem ficha, usa um id que não existe: as consultas voltam vazias. Nunca passe undefined, que significa "todos".
+  const doDevedor = (c: Context<Ambiente>) => c.get('usuario').pessoaId ?? 0;
 
   function emprestimoDoDevedor(c: Context<Ambiente>): EmprestimoVisao {
     const v = repo.visaoPorId(idParam(c), hoje());

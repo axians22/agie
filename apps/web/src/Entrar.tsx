@@ -31,7 +31,6 @@ function carregarGoogle(): Promise<void> {
 }
 
 const ERROS: Record<string, string> = {
-  acesso: 'Esta conta não tem acesso. Peça ao credor para cadastrar seu e-mail.',
   login: 'Não foi possível entrar com o Google. Tente de novo.',
 };
 

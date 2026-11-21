@@ -102,7 +102,12 @@ export class Repo {
     this.db.prepare('INSERT INTO admins (email, criado_por) VALUES (?, ?)').run(normalizarEmail(email), por);
   }
   removerAdmin(email: string): boolean {
-    return this.db.prepare('DELETE FROM admins WHERE email = ?').run(normalizarEmail(email)).changes > 0;
+    const e = normalizarEmail(email);
+    return transacao(this.db, () => {
+      if (this.db.prepare('DELETE FROM admins WHERE email = ?').run(e).changes === 0) return false;
+      this.db.prepare('DELETE FROM sessoes WHERE usuario_id IN (SELECT id FROM usuarios WHERE email = ?)').run(e);
+      return true;
+    });
   }
 
   // Pessoas

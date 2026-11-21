@@ -62,7 +62,7 @@ function Pessoas() {
             <div className="linha">
               <div className="min0">
                 <strong className="corta bloco">{nomePessoa(p)}</strong>
-                <span className="suave corta bloco">{p.email ?? 'Sem e-mail: não acessa o app'}</span>
+                <span className="suave corta bloco">{p.email ?? 'Sem e-mail: não vê as dívidas no app'}</span>
               </div>
               <div className="dir">
                 <strong className={p.temAtraso ? 'txt-ruim' : ''}>{moeda(p.saldoCentavos ?? 0)}</strong>

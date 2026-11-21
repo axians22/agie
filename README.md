@@ -1,7 +1,8 @@
 # Controle de Empréstimos
 
 App web instalável (PWA) para controlar empréstimos. O administrador gerencia pessoas, empréstimos e pagamentos.
-Cada devedor entra com a conta Google e vê somente as próprias dívidas.
+Qualquer pessoa entra com a conta Google. Quem não é administrador é usuário e vê somente as dívidas ligadas ao próprio
+e-mail.
 
 ## Desenvolvimento
 

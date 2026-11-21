@@ -138,10 +138,29 @@ describe('login', () => {
     assert.equal(((await r.json()) as { usuario: { papel: string } }).usuario.papel, 'devedor');
   });
 
-  test('e-mail desconhecido é recusado e nenhum usuário é criado', async () => {
+  test('conta sem ficha entra como usuário e não vê dados de ninguém', async () => {
     const r = await t.chamar('POST', '/api/auth/google', { corpo: { credential: 'valido:estranho@teste.local' } });
-    assert.equal(r.status, 403);
-    assert.equal((t.db.prepare('SELECT COUNT(*) AS n FROM usuarios').get() as { n: number }).n, 0);
+    assert.equal(r.status, 200);
+    assert.equal(((await r.json()) as { usuario: { papel: string } }).usuario.papel, 'devedor');
+    const c = await t.login('estranho@teste.local');
+    const lista = (await (await t.chamar('GET', '/api/devedor/emprestimos', { cookie: c })).json()) as { emprestimos: unknown[] };
+    assert.deepEqual(lista.emprestimos, []);
+    const res = (await (await t.chamar('GET', '/api/devedor/resumo', { cookie: c })).json()) as { resumo: { totalEmprestado: number } };
+    assert.equal(res.resumo.totalEmprestado, 0);
+    for (const id of [t.empA, t.empB]) {
+      for (const sufixo of ['', '/pix']) {
+        assert.equal((await t.chamar('GET', `/api/devedor/emprestimos/${id}${sufixo}`, { cookie: c })).status, 404);
+      }
+    }
+    assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: c })).status, 403);
+  });
+
+  test('ao cadastrar o e-mail na ficha, o usuário passa a ver as dívidas', async () => {
+    const c = await t.login('novo@teste.local');
+    const p = t.repo.criarPessoa({ nome: 'Novo', sobrenome: '', telefone: '', email: 'novo@teste.local' });
+    const id = t.repo.criarEmprestimo({ pessoaId: p, nome: 'N', valorTotalCentavos: 1000, dataEmprestimo: '2026-01-01', dataPrevistaPagamento: '2026-02-01', primeiroVencimento: '2026-02-01', numParcelas: 1, jurosAoMesPct: 0, tipoMulta: 0, multaValor: 0 });
+    const lista = (await (await t.chamar('GET', '/api/devedor/emprestimos', { cookie: c })).json()) as { emprestimos: Array<{ id: number }> };
+    assert.deepEqual(lista.emprestimos.map((e) => e.id), [id]);
   });
 
   test('token inválido responde 401 e Google fora responde 503', async () => {
@@ -172,10 +191,12 @@ describe('login', () => {
     assert.equal((await t.chamar('GET', '/api/auth/me', { cookie: c })).status, 401);
   });
 
-  test('remover o e-mail da ficha tira o acesso na hora', async () => {
+  test('remover o e-mail da ficha esconde as dívidas na hora', async () => {
     const c = await t.login(EMAILS_TESTE.devedorA);
     t.repo.atualizarPessoa(t.a, { nome: 'Ana', sobrenome: 'A', telefone: '1', email: null });
-    assert.equal((await t.chamar('GET', '/api/devedor/resumo', { cookie: c })).status, 401);
+    const lista = (await (await t.chamar('GET', '/api/devedor/emprestimos', { cookie: c })).json()) as { emprestimos: unknown[] };
+    assert.deepEqual(lista.emprestimos, []);
+    assert.equal((await t.chamar('GET', `/api/devedor/emprestimos/${t.empA}`, { cookie: c })).status, 404);
   });
 
   test('POST sem Origin ou de outra origem é recusado', async () => {
@@ -216,8 +237,8 @@ describe('login', () => {
       assert.equal(r.headers.get('location'), '/entrar?erro=login');
       assert.equal(r.headers.get('set-cookie'), null);
     }
-    const negado = await enviar('abc', 'estranho@teste.local');
-    assert.equal(negado.headers.get('location'), '/entrar?erro=acesso');
+    const semFicha = await enviar('abc', 'estranho@teste.local');
+    assert.equal(semFicha.headers.get('location'), '/');
     const ok = await enviar('abc');
     assert.equal(ok.headers.get('location'), '/');
     assert.match(ok.headers.get('set-cookie') ?? '', /emprestimos_sessao=/);
@@ -353,6 +374,8 @@ describe('configurações do admin', () => {
     const extra = await t.login(EXTRA);
     assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EXTRA)}`, { cookie: admin })).status, 204);
     assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: extra })).status, 401);
+    const denovo = await t.login(EXTRA);
+    assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: denovo })).status, 403);
     assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EMAILS_TESTE.admin)}`, { cookie: admin })).status, 409);
   });
 
