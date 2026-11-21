@@ -16,6 +16,7 @@ export interface Pessoa {
   sobrenome: string;
   telefone: string;
   email: string | null;
+  avatarUrl: string | null;
   criadaEm: string;
 }
 
@@ -48,7 +49,7 @@ export type DadosPessoa = Pick<Pessoa, 'nome' | 'sobrenome' | 'telefone' | 'emai
 export type DadosEmprestimo = Omit<Emprestimo, 'id' | 'criadoEm'>;
 export type DadosPagamento = Pick<Pagamento, 'data' | 'valorCentavos' | 'observacao'>;
 
-const C_PESSOA = 'id, nome, sobrenome, telefone, email, criada_em AS criadaEm';
+const C_PESSOA = 'id, nome, sobrenome, telefone, email, avatar_url AS avatarUrl, criada_em AS criadaEm';
 const C_EMP = `id, pessoa_id AS pessoaId, nome, valor_total_centavos AS valorTotalCentavos,
   data_emprestimo AS dataEmprestimo, data_prevista_pagamento AS dataPrevistaPagamento,
   primeiro_vencimento AS primeiroVencimento, num_parcelas AS numParcelas,
@@ -70,6 +71,12 @@ export interface DadosPixConfig {
   chave: string;
   nome: string;
   cidade: string;
+}
+
+export interface IdentidadePessoa {
+  email: string;
+  nome: string | null;
+  avatarUrl: string | null;
 }
 
 export class Repo {
@@ -98,8 +105,18 @@ export class Repo {
   ehAdminCadastrado(email: string): boolean {
     return !!this.db.prepare('SELECT 1 FROM admins WHERE email = ?').get(normalizarEmail(email));
   }
-  adicionarAdmin(email: string, por: string): void {
-    this.db.prepare('INSERT INTO admins (email, criado_por) VALUES (?, ?)').run(normalizarEmail(email), por);
+  /** Transforma em admin. A ficha criada pelo login sai junto, desde que não tenha empréstimos. */
+  promoverAdmin(email: string, por: string): boolean {
+    const e = normalizarEmail(email);
+    return transacao(this.db, () => {
+      const p = this.db
+        .prepare('SELECT id, via_google AS viaGoogle, (SELECT COUNT(*) FROM emprestimos WHERE pessoa_id = pessoas.id) AS n FROM pessoas WHERE lower(email) = ?')
+        .get(e) as { id: number; viaGoogle: number; n: number } | undefined;
+      if (p && (!p.viaGoogle || p.n > 0)) return false;
+      if (p) this.db.prepare('DELETE FROM pessoas WHERE id = ?').run(p.id);
+      this.db.prepare('INSERT INTO admins (email, criado_por) VALUES (?, ?)').run(e, por);
+      return true;
+    });
   }
   removerAdmin(email: string): boolean {
     const e = normalizarEmail(email);
@@ -107,6 +124,35 @@ export class Repo {
       if (this.db.prepare('DELETE FROM admins WHERE email = ?').run(e).changes === 0) return false;
       this.db.prepare('DELETE FROM sessoes WHERE usuario_id IN (SELECT id FROM usuarios WHERE email = ?)').run(e);
       return true;
+    });
+  }
+
+  // Pessoas que entraram com Google
+  private gravarPessoaGoogle(id: IdentidadePessoa): void {
+    const email = normalizarEmail(id.email);
+    const partes = (id.nome ?? '').trim().split(/\s+/).filter(Boolean);
+    const nome = (partes[0] ?? email.split('@')[0]!).slice(0, 100);
+    const sobrenome = partes.slice(1).join(' ').slice(0, 100);
+    this.db
+      .prepare('INSERT INTO pessoas (nome, sobrenome, email, avatar_url, via_google) VALUES (?, ?, ?, ?, 1) ON CONFLICT DO NOTHING')
+      .run(nome, sobrenome, email, id.avatarUrl);
+    // Nome e telefone podem ter sido corrigidos pelo admin; só a foto acompanha o Google.
+    if (id.avatarUrl) this.db.prepare('UPDATE pessoas SET avatar_url = ? WHERE lower(email) = ?').run(id.avatarUrl, email);
+  }
+  registrarPessoaGoogle(id: IdentidadePessoa): void {
+    transacao(this.db, () => this.gravarPessoaGoogle(id));
+  }
+  /** Traz para Pessoas quem já tinha entrado no app antes desta lista existir. */
+  sincronizarPessoasGoogle(principais: Set<string>): void {
+    transacao(this.db, () => {
+      const contas = this.db
+        .prepare(
+          `SELECT email, nome, avatar_url AS avatarUrl FROM usuarios u
+           WHERE NOT EXISTS (SELECT 1 FROM admins a WHERE a.email = u.email)
+             AND NOT EXISTS (SELECT 1 FROM pessoas p WHERE lower(p.email) = u.email)`,
+        )
+        .all() as unknown as IdentidadePessoa[];
+      for (const c of contas) if (!principais.has(c.email)) this.gravarPessoaGoogle(c);
     });
   }
 
@@ -134,7 +180,14 @@ export class Repo {
     return Number(r.changes) > 0;
   }
   removerPessoa(id: number): boolean {
-    return Number(this.db.prepare('DELETE FROM pessoas WHERE id = ?').run(id).changes) > 0;
+    return transacao(this.db, () => {
+      const p = this.db.prepare('SELECT email FROM pessoas WHERE id = ?').get(id) as { email: string | null } | undefined;
+      if (!p) return false;
+      this.db.prepare('DELETE FROM pessoas WHERE id = ?').run(id);
+      // Encerra a conta junto, para a pessoa não voltar à lista sem um novo login.
+      if (p.email) this.db.prepare('DELETE FROM usuarios WHERE email = ? AND email NOT IN (SELECT email FROM admins)').run(normalizarEmail(p.email));
+      return true;
+    });
   }
 
   // Empréstimos
@@ -262,7 +315,13 @@ export class Repo {
   /** Importa um backup para um banco vazio e confere que os totais não mudaram. */
   importar(b: BackupEntrada): { pessoas: number; emprestimos: number; pagamentos: number } {
     return transacao(this.db, () => {
-      if (!this.vazio()) throw new ErroImportacao('O banco já tem dados. A importação só é feita em um banco vazio.');
+      const manuais = this.db.prepare('SELECT (SELECT COUNT(*) FROM pessoas WHERE via_google = 0 OR email IS NULL) + (SELECT COUNT(*) FROM emprestimos) AS n').get() as { n: number };
+      if (manuais.n > 0) throw new ErroImportacao('O banco já tem dados. A importação só é feita antes de cadastrar pessoas e empréstimos.');
+      // Quem só fez login sai antes da importação e volta depois, sem disputar os ids do backup.
+      const contasGoogle = this.db
+        .prepare("SELECT email, trim(nome || ' ' || sobrenome) AS nome, avatar_url AS avatarUrl FROM pessoas")
+        .all() as unknown as IdentidadePessoa[];
+      this.db.exec('DELETE FROM pessoas');
       const insP = this.db.prepare('INSERT INTO pessoas (id, nome, sobrenome, telefone, email, criada_em) VALUES (?,?,?,?,?,?)');
       for (const p of b.pessoas) insP.run(p.id, p.nome, p.sobrenome, p.telefone, p.email ? normalizarEmail(p.email) : null, p.criadaEm);
       const insE = this.db.prepare(
@@ -283,6 +342,7 @@ export class Repo {
       if (somaP !== b.pagamentos.reduce((s, p) => s + p.valorCentavos, 0) || somaE !== b.emprestimos.reduce((s, e) => s + e.valorTotalCentavos, 0)) {
         throw new ErroImportacao('Os totais importados não conferem com o backup.');
       }
+      for (const c of contasGoogle) this.gravarPessoaGoogle(c);
       return { pessoas: b.pessoas.length, emprestimos: b.emprestimos.length, pagamentos: b.pagamentos.length };
     });
   }

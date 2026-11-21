@@ -174,6 +174,7 @@ function dtoDevedor(v: EmprestimoVisao) {
 
 export function criarApp({ db, config, google, agora = () => new Date() }: Dependencias) {
   const repo = new Repo(db);
+  repo.sincronizarPessoasGoogle(config.adminEmails);
   const app = new Hono<Ambiente>();
   const hoje = () => hojeBrasil(agora());
   const cookie = nomeCookie(config.cookieSeguro);
@@ -193,6 +194,9 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   };
 
   function entrar(c: Context, identidade: { email: string; nome: string | null; avatarUrl: string | null }) {
+    if (!config.adminEmails.has(normalizarEmail(identidade.email)) && !repo.ehAdminCadastrado(identidade.email)) {
+      repo.registrarPessoaGoogle(identidade);
+    }
     const momento = agora();
     const usuarioId = registrarLogin(db, identidade, momento);
     const { token, expira } = criarSessao(db, usuarioId, momento);
@@ -457,8 +461,10 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   app.post('/api/admin/configuracoes/admins', async (c) => {
     exigirPrincipal(c);
     const email = normalizarEmail((await corpo(c, esquemaAdmin)).email);
-    garantirEmailLivre(email);
-    repo.adicionarAdmin(email, c.get('usuario').email);
+    if (config.adminEmails.has(email) || repo.ehAdminCadastrado(email)) throw new ErroHttp(409, 'EMAIL_ADMIN', 'Este e-mail já é de um administrador.');
+    if (!repo.promoverAdmin(email, c.get('usuario').email)) {
+      throw new ErroHttp(409, 'EMAIL_EM_USO', 'Esta pessoa tem empréstimos ou cadastro manual e não pode virar administrador.');
+    }
     return c.json({ email }, 201);
   });
 

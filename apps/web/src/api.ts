@@ -101,6 +101,7 @@ export interface PessoaDto {
   sobrenome: string;
   telefone: string;
   email: string | null;
+  avatarUrl?: string | null;
   saldoCentavos?: number;
   emprestimos?: number;
   temAtraso?: boolean;

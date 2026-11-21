@@ -30,11 +30,14 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
   });
   const db = abrirBanco(':memory:');
   let momento = AGORA;
+  const identidades = new Map<string, { nome: string; avatarUrl: string | null }>();
   const google = {
     async verificar(token: string) {
       if (token === 'token-indisponivel') throw new ErroGoogle(true);
       if (!token.startsWith('valido:')) throw new ErroGoogle(false);
-      return { email: token.slice(7), nome: 'Via Google', avatarUrl: null };
+      const email = token.slice(7);
+      const extra = identidades.get(email.toLowerCase());
+      return { email: email.toLowerCase(), nome: extra?.nome ?? 'Via Google', avatarUrl: extra?.avatarUrl ?? null };
     },
   };
   const app = criarApp({ db, config, google, agora: () => momento });
@@ -60,7 +63,7 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
     assert.equal(r.status, 200);
     return r.headers.get('set-cookie')!.split(';')[0]!;
   }
-  return { app, db, repo, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
+  return { app, db, repo, identidades, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
 }
 
 type Ctx = ReturnType<typeof montar>;
@@ -155,12 +158,48 @@ describe('login', () => {
     assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: c })).status, 403);
   });
 
-  test('ao cadastrar o e-mail na ficha, o usuário passa a ver as dívidas', async () => {
+  test('quem entra aparece em Pessoas com nome, e-mail e foto', async () => {
+    const foto = 'https://lh3.googleusercontent.com/a/foto';
+    t.identidades.set('novo@teste.local', { nome: 'Maria da Silva', avatarUrl: foto });
     const c = await t.login('novo@teste.local');
-    const p = t.repo.criarPessoa({ nome: 'Novo', sobrenome: '', telefone: '', email: 'novo@teste.local' });
-    const id = t.repo.criarEmprestimo({ pessoaId: p, nome: 'N', valorTotalCentavos: 1000, dataEmprestimo: '2026-01-01', dataPrevistaPagamento: '2026-02-01', primeiroVencimento: '2026-02-01', numParcelas: 1, jurosAoMesPct: 0, tipoMulta: 0, multaValor: 0 });
+    const admin = await t.login(EMAILS_TESTE.admin);
+    const r = (await (await t.chamar('GET', '/api/admin/pessoas', { cookie: admin })).json()) as { pessoas: Array<{ id: number; nome: string; sobrenome: string; email: string; avatarUrl: string }> };
+    const p = r.pessoas.find((x) => x.email === 'novo@teste.local')!;
+    assert.deepEqual([p.nome, p.sobrenome, p.avatarUrl], ['Maria', 'da Silva', foto]);
+    assert.ok(!r.pessoas.some((x) => x.email === EMAILS_TESTE.admin));
+    const id = t.repo.criarEmprestimo({ pessoaId: p.id, nome: 'N', valorTotalCentavos: 1000, dataEmprestimo: '2026-01-01', dataPrevistaPagamento: '2026-02-01', primeiroVencimento: '2026-02-01', numParcelas: 1, jurosAoMesPct: 0, tipoMulta: 0, multaValor: 0 });
     const lista = (await (await t.chamar('GET', '/api/devedor/emprestimos', { cookie: c })).json()) as { emprestimos: Array<{ id: number }> };
     assert.deepEqual(lista.emprestimos.map((e) => e.id), [id]);
+  });
+
+  test('novo login atualiza a foto e não sobrescreve o nome corrigido nem duplica', async () => {
+    t.identidades.set('novo@teste.local', { nome: 'Maria Silva', avatarUrl: 'https://lh3.googleusercontent.com/a/1' });
+    await t.login('novo@teste.local');
+    const id = t.repo.pessoas().find((p) => p.email === 'novo@teste.local')!.id;
+    t.repo.atualizarPessoa(id, { nome: 'Maria', sobrenome: 'Corrigida', telefone: '9', email: 'novo@teste.local' });
+    t.identidades.set('novo@teste.local', { nome: 'Outro Nome', avatarUrl: 'https://lh3.googleusercontent.com/a/2' });
+    await t.login('novo@teste.local');
+    const iguais = t.repo.pessoas().filter((p) => p.email === 'novo@teste.local');
+    assert.equal(iguais.length, 1);
+    assert.deepEqual([iguais[0]!.sobrenome, iguais[0]!.telefone, iguais[0]!.avatarUrl], ['Corrigida', '9', 'https://lh3.googleusercontent.com/a/2']);
+  });
+
+  test('conta antiga sem ficha entra na lista ao iniciar o app', () => {
+    t.db.prepare("INSERT INTO usuarios (email, nome) VALUES ('antigo@teste.local', 'Conta Antiga')").run();
+    t.db.prepare("INSERT INTO usuarios (email, nome) VALUES (?, 'Admin')").run(EMAILS_TESTE.admin);
+    t.repo.sincronizarPessoasGoogle(new Set([EMAILS_TESTE.admin]));
+    const emails = t.repo.pessoas().map((p) => p.email);
+    assert.ok(emails.includes('antigo@teste.local'));
+    assert.ok(!emails.includes(EMAILS_TESTE.admin));
+  });
+
+  test('excluir a pessoa encerra a sessão e ela só volta com novo login', async () => {
+    const c = await t.login('novo@teste.local');
+    const id = t.repo.pessoas().find((p) => p.email === 'novo@teste.local')!.id;
+    assert.ok(t.repo.removerPessoa(id));
+    assert.equal((await t.chamar('GET', '/api/auth/me', { cookie: c })).status, 401);
+    t.repo.sincronizarPessoasGoogle(new Set([EMAILS_TESTE.admin]));
+    assert.ok(!t.repo.pessoas().some((p) => p.email === 'novo@teste.local'));
   });
 
   test('token inválido responde 401 e Google fora responde 503', async () => {
@@ -377,6 +416,23 @@ describe('configurações do admin', () => {
     const denovo = await t.login(EXTRA);
     assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: denovo })).status, 403);
     assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EMAILS_TESTE.admin)}`, { cookie: admin })).status, 409);
+  });
+
+  test('quem só fez login pode virar admin e sai de Pessoas', async () => {
+    await t.login(EXTRA);
+    assert.equal((await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EXTRA } })).status, 201);
+    assert.ok(!t.repo.pessoas().some((p) => p.email === EXTRA));
+    const extra = await t.login(EXTRA);
+    assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: extra })).status, 200);
+    assert.ok(!t.repo.pessoas().some((p) => p.email === EXTRA));
+  });
+
+  test('importar backup mantém quem só fez login', async () => {
+    const backup = { formato: 1, pessoas: [{ id: 1, nome: 'Importada', sobrenome: '', telefone: '', email: 'importada@teste.local', criadaEm: '2026-01-01' }], emprestimos: [], pagamentos: [] };
+    t.db.exec('DELETE FROM pessoas');
+    await t.login('novo@teste.local');
+    assert.equal((await t.chamar('POST', '/api/admin/importar', { cookie: admin, corpo: backup })).status, 200);
+    assert.deepEqual(t.repo.pessoas().map((p) => p.email).sort(), ['importada@teste.local', 'novo@teste.local']);
   });
 
   test('um e-mail não pode ser devedor e admin ao mesmo tempo', async () => {

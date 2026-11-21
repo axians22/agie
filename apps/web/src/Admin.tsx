@@ -11,6 +11,15 @@ type ListaE = { emprestimos: EmprestimoDto[]; hoje: string };
 const nomePessoa = (p?: Pick<PessoaDto, 'nome' | 'sobrenome'>) => (p ? `${p.nome} ${p.sobrenome}`.trim() : '');
 const normal = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+function Avatar({ nome, url }: { nome: string; url?: string | null }) {
+  const [falhou, setFalhou] = useState(false);
+  if (url && !falhou) {
+    return <img className="avatar" src={url} alt="" width={40} height={40} loading="lazy" referrerPolicy="no-referrer" onError={() => setFalhou(true)} />;
+  }
+  const iniciais = nome.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('');
+  return <span className="avatar" aria-hidden="true">{iniciais || '?'}</span>;
+}
+
 function Inicio() {
   const r = useDados<{ resumo: Resumo }>('/admin/resumo');
   const l = useDados<ListaE>('/admin/emprestimos');
@@ -60,9 +69,12 @@ function Pessoas() {
         {lista.map((p) => (
           <Link key={p.id} to={`/pessoas/${p.id}`} className="cartao link">
             <div className="linha">
-              <div className="min0">
-                <strong className="corta bloco">{nomePessoa(p)}</strong>
-                <span className="suave corta bloco">{p.email ?? 'Sem e-mail: não vê as dívidas no app'}</span>
+              <div className="pessoa-id">
+                <Avatar nome={nomePessoa(p)} url={p.avatarUrl} />
+                <div className="min0">
+                  <strong className="corta bloco">{nomePessoa(p)}</strong>
+                  <span className="suave corta bloco">{p.email ?? 'Sem e-mail: não vê as dívidas no app'}</span>
+                </div>
               </div>
               <div className="dir">
                 <strong className={p.temAtraso ? 'txt-ruim' : ''}>{moeda(p.saldoCentavos ?? 0)}</strong>
@@ -99,6 +111,10 @@ function PessoaDetalhe() {
       {p && dados && (
         <>
           <section className="cartao">
+            <div className="pessoa-id ficha">
+              <Avatar nome={nomePessoa(p)} url={p.avatarUrl} />
+              <strong className="corta">{nomePessoa(p)}</strong>
+            </div>
             <dl className="dados">
               <div><dt>Telefone</dt><dd>{p.telefone ? <a href={`tel:${p.telefone.replace(/[^\d+]/g, '')}`}>{p.telefone}</a> : '-'}</dd></div>
               <div><dt>E-mail do login</dt><dd className="quebra">{p.email ?? 'Não cadastrado'}</dd></div>
@@ -661,7 +677,7 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
         <h2>Backup</h2>
         <p className="suave peq">Baixe uma cópia de todos os dados. Guarde em local seguro, pois contém dados financeiros.</p>
         <a className="btn sec" href="/api/admin/backup" download>Baixar backup</a>
-        <p className="suave peq">Para trazer os dados do app antigo, envie o backup JSON. Só funciona com o sistema vazio.</p>
+        <p className="suave peq">Para trazer os dados do app antigo, envie o backup JSON. Só funciona antes de cadastrar pessoas e empréstimos.</p>
         <input ref={arquivo} type="file" accept="application/json,.json" hidden aria-label="Arquivo de backup" onChange={(e) => importar(e.target.files?.[0])} />
         <button className="btn sec" onClick={() => arquivo.current?.click()}>Importar backup</button>
         {erro && <p className="erro" role="alert">{erro}</p>}

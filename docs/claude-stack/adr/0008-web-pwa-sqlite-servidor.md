@@ -13,7 +13,7 @@ aparelho, e a maioria usará somente o celular.
 - Login Google, como no scalex: o servidor valida o ID token e cria uma sessão opaca em cookie `HttpOnly`,
   `SameSite=Strict`, guardando só o SHA-256 do token.
 - Papel calculado a cada requisição: o admin principal vem de `ADMIN_EMAILS`, os demais da tabela `admins`. Qualquer
-  outra conta Google entra como usuário e só vê a ficha que tem o próprio e-mail.
+  outra conta Google entra como usuário, ganha uma ficha em Pessoas (nome, e-mail e foto) e só vê os próprios dados.
 - Pix e administradores ficam na tela Config, no banco. Só o admin principal altera, porque trocar a chave desvia
   os pagamentos.
 - Rotas fechadas por padrão. Rotas do devedor sempre filtram pela pessoa da sessão e usam uma lista explícita de

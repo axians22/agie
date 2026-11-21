@@ -72,6 +72,10 @@ const MIGRACOES = [
     criado_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
   `,
+  `
+  ALTER TABLE pessoas ADD COLUMN avatar_url TEXT;
+  ALTER TABLE pessoas ADD COLUMN via_google INTEGER NOT NULL DEFAULT 0 CHECK (via_google IN (0,1));
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {
