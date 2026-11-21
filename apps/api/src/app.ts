@@ -16,7 +16,7 @@ import {
 } from './auth.ts';
 import { normalizarEmail, type Config } from './config.ts';
 import { chavesInscricaoValidas, endpointPermitido, ServicoPush } from './push.ts';
-import { ErroImportacao, Repo, type EmprestimoVisao, type Pedido } from './repo.ts';
+import { ErroImportacao, Repo, type AvisoPagamento, type EmprestimoVisao, type Pedido } from './repo.ts';
 
 type Ambiente = { Variables: { usuario: UsuarioSessao } };
 
@@ -86,6 +86,11 @@ const esquemaAprovacao = z
   .refine((e) => e.tipoMulta !== 2 || e.multaValor <= 100, { message: 'multa percentual acima de 100%' })
   .refine((e) => e.tipoMulta !== 1 || Number.isInteger(e.multaValor), { message: 'multa fixa deve estar em centavos' })
   .refine((e) => e.primeiroVencimento >= e.dataEmprestimo, { path: ['primeiroVencimento'], message: 'vencimento antes do empréstimo' });
+
+const esquemaConfirmaPagamento = z.strictObject({
+  data,
+  valorCentavos: z.number().int().positive().max(1_000_000_000_00),
+});
 
 const esquemaRecusa = z.strictObject({ motivo: textoOpc(300) });
 
@@ -391,7 +396,19 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
 
   app.get('/api/devedor/resumo', (c) => c.json({ resumo: repo.resumo(hoje(), doDevedor(c)), hoje: hoje() }));
   app.get('/api/devedor/emprestimos', (c) => c.json({ emprestimos: repo.visoes(hoje(), doDevedor(c)).map(dtoDevedor), hoje: hoje() }));
-  app.get('/api/devedor/emprestimos/:id', (c) => c.json({ emprestimo: dtoDevedor(emprestimoDoDevedor(c)), pixDisponivel: !!repo.pixConfig(), hoje: hoje() }));
+  app.get('/api/devedor/emprestimos/:id', (c) => {
+    const v = emprestimoDoDevedor(c);
+    const aviso = repo.ultimoAvisoPagamento(v.emprestimo.id);
+    return c.json({
+      emprestimo: dtoDevedor(v),
+      pixDisponivel: !!repo.pixConfig(),
+      avisoPagamento:
+        aviso && (aviso.status === 'pendente' || aviso.status === 'recusado')
+          ? { id: aviso.id, status: aviso.status, valorCentavos: aviso.valorCentavos, motivo: aviso.motivo }
+          : null,
+      hoje: hoje(),
+    });
+  });
   app.get('/api/devedor/emprestimos/:id/pix', (c) => {
     const v = emprestimoDoDevedor(c);
     const pix = repo.pixConfig();
@@ -404,6 +421,26 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
       txid,
       recebedor: pix.nome,
     });
+  });
+
+  app.post('/api/devedor/emprestimos/:id/pagamento-informado', (c) => {
+    const v = emprestimoDoDevedor(c);
+    if (v.valorPagarAgora <= 0) throw new ErroHttp(409, 'NADA_A_PAGAR', 'Não há valor em aberto.');
+    // O valor vem do servidor: é o mesmo do QR Code, e o devedor não consegue informar outro.
+    const txid = `EMP${v.emprestimo.id}D${hoje().replaceAll('-', '')}`;
+    const r = repo.criarAvisoPagamento(v.emprestimo.id, v.valorPagarAgora, txid, agora());
+    if (r === 'aberto') throw new ErroHttp(409, 'AVISO_ABERTO', 'Este pagamento já foi informado e aguarda confirmação.');
+    if (r === 'limite') throw new ErroHttp(409, 'AVISO_LIMITE', 'Muitos avisos em 24 horas. Fale com o credor.');
+    push.paraAdmins({ titulo: 'Pagamento informado', corpo: 'Confira no banco e confirme no app.', url: '/pedidos', tag: `aviso-${r}` });
+    return c.json({ id: r }, 201);
+  });
+  app.post('/api/devedor/avisos-pagamento/:id/cancelar', (c) => {
+    const id = idParam(c);
+    const a = repo.avisoPagamento(id);
+    const e = a ? repo.emprestimo(a.emprestimoId) : null;
+    if (!a || !e || e.pessoaId !== doDevedor(c)) throw naoEncontrado();
+    if (!repo.cancelarAvisoPagamento(id, agora())) throw new ErroHttp(409, 'AVISO_DECIDIDO', 'Este pagamento já foi respondido.');
+    return c.json({ ok: true });
   });
 
   app.get('/api/devedor/pedidos', (c) => c.json({ pedidos: repo.pedidosDaPessoa(doDevedor(c)).map(dtoPedido), hoje: hoje() }));
@@ -427,7 +464,7 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
 
   // ---------- Admin ----------
   app.get('/api/admin/resumo', (c) => {
-    return c.json({ resumo: repo.resumo(hoje()), pedidosPendentes: repo.contarPedidosPendentes(), hoje: hoje() });
+    return c.json({ resumo: repo.resumo(hoje()), pedidosPendentes: repo.contarPedidosPendentes(), avisosPagamento: repo.contarAvisosPendentes(), hoje: hoje() });
   });
 
   app.get('/api/admin/pessoas', (c) => {
@@ -573,6 +610,46 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
     const { motivo } = await corpo(c, esquemaRecusa);
     if (!repo.recusarPedido(id, motivo, c.get('usuario').email, agora())) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
     push.paraPessoa(p.pessoaId, { titulo: 'Pedido recusado', corpo: 'Abra o app para ver a resposta.', url: '/pedidos', tag: `pedido-${id}` });
+    return c.json({ ok: true });
+  });
+
+  const dtoAvisoAdmin = (a: AvisoPagamento) => {
+    const e = repo.emprestimo(a.emprestimoId)!;
+    const p = repo.pessoa(e.pessoaId)!;
+    return {
+      id: a.id,
+      emprestimoId: a.emprestimoId,
+      emprestimoNome: e.nome,
+      valorCentavos: a.valorCentavos,
+      txid: a.txid,
+      criadoEm: a.criadoEm,
+      pessoa: { id: p.id, nome: p.nome, sobrenome: p.sobrenome, telefone: p.telefone, email: p.email, avatarUrl: p.avatarUrl },
+    };
+  };
+  const avisoAberto = (id: number) => {
+    const a = repo.avisoPagamento(id);
+    if (!a) throw naoEncontrado();
+    if (a.status !== 'pendente') throw new ErroHttp(409, 'AVISO_DECIDIDO', 'Este pagamento já foi respondido.');
+    return a;
+  };
+
+  app.get('/api/admin/avisos-pagamento', (c) => c.json({ avisos: repo.avisosPendentes().map(dtoAvisoAdmin), hoje: hoje() }));
+  app.post('/api/admin/avisos-pagamento/:id/confirmar', async (c) => {
+    const id = idParam(c);
+    const a = avisoAberto(id);
+    const d = await corpo(c, esquemaConfirmaPagamento);
+    if (d.data > hoje()) throw new ErroHttp(400, 'DATA_FUTURA', 'A data do pagamento não pode estar no futuro.');
+    const pagamentoId = repo.confirmarAvisoPagamento(id, d, c.get('usuario').email, agora());
+    if (pagamentoId === null) throw new ErroHttp(409, 'AVISO_DECIDIDO', 'Este pagamento já foi respondido.');
+    avisarPagamento(repo.emprestimo(a.emprestimoId)!.pessoaId, a.emprestimoId);
+    return c.json({ pagamentoId }, 201);
+  });
+  app.post('/api/admin/avisos-pagamento/:id/recusar', async (c) => {
+    const id = idParam(c);
+    const a = avisoAberto(id);
+    const { motivo } = await corpo(c, esquemaRecusa);
+    if (!repo.recusarAvisoPagamento(id, motivo, c.get('usuario').email, agora())) throw new ErroHttp(409, 'AVISO_DECIDIDO', 'Este pagamento já foi respondido.');
+    push.paraPessoa(repo.emprestimo(a.emprestimoId)!.pessoaId, { titulo: 'Pagamento não confirmado', corpo: 'Abra o app para ver a resposta.', url: `/emprestimos/${a.emprestimoId}`, tag: `pagamento-${a.emprestimoId}` });
     return c.json({ ok: true });
   });
 

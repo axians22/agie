@@ -117,6 +117,23 @@ const MIGRACOES = [
   );
   CREATE INDEX push_lembretes_data ON push_lembretes (data);
   `,
+  `
+  CREATE TABLE avisos_pagamento (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    emprestimo_id INTEGER NOT NULL REFERENCES emprestimos(id) ON DELETE CASCADE,
+    valor_centavos INTEGER NOT NULL CHECK (valor_centavos > 0),
+    txid TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente','confirmado','recusado','cancelado')),
+    motivo TEXT,
+    pagamento_id INTEGER REFERENCES pagamentos(id) ON DELETE SET NULL,
+    decidido_por TEXT,
+    decidido_em TEXT,
+    criado_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX avisos_pagamento_emprestimo ON avisos_pagamento (emprestimo_id, id);
+  CREATE INDEX avisos_pagamento_status ON avisos_pagamento (status, id);
+  CREATE UNIQUE INDEX avisos_pagamento_um_pendente ON avisos_pagamento (emprestimo_id) WHERE status = 'pendente';
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {

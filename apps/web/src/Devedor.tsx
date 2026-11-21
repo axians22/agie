@@ -115,7 +115,10 @@ interface DadosPix {
   recebedor: string;
 }
 
-function PagarPix({ emprestimoId, aoFechar }: { emprestimoId: number; aoFechar: () => void }) {
+function PagarPix({ emprestimoId, aoFechar, aoInformar }: { emprestimoId: number; aoFechar: () => void; aoInformar: () => void }) {
+  const avisar = useAviso();
+  const [confirmando, setConfirmando] = useState(false);
+  const [informando, setInformando] = useState(false);
   const [pix, setPix] = useState<DadosPix | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -146,6 +149,21 @@ function PagarPix({ emprestimoId, aoFechar }: { emprestimoId: number; aoFechar: 
     }
   };
 
+  const informar = async () => {
+    setErro(null);
+    setInformando(true);
+    try {
+      await api('POST', `/devedor/emprestimos/${emprestimoId}/pagamento-informado`);
+      avisar('Pagamento informado ao credor.');
+      aoInformar();
+    } catch (x) {
+      setErro(mensagemErro(x));
+      setConfirmando(false);
+    } finally {
+      setInformando(false);
+    }
+  };
+
   return (
     <Modal titulo="Pagar com Pix" aoFechar={aoFechar}>
       {erro && <p className="erro" role="alert">{erro}</p>}
@@ -158,7 +176,15 @@ function PagarPix({ emprestimoId, aoFechar }: { emprestimoId: number; aoFechar: 
           <button className="btn" onClick={copiar}>{copia === 'ok' ? 'Código copiado ✓' : 'Copiar código Pix'}</button>
           {copia === 'falhou' && <p className="erro" role="alert">Não foi possível copiar. Toque no código abaixo e copie.</p>}
           <textarea className="pix-codigo" readOnly rows={3} value={pix.codigo} aria-label="Código Pix Copia e Cola" onFocus={(e) => e.target.select()} />
-          <p className="suave peq">Pague este valor exato. A baixa aparece aqui depois que o credor confirmar o recebimento.</p>
+          <p className="suave peq">Pague este valor exato e depois toque em Já paguei. A baixa aparece quando o credor confirmar o recebimento.</p>
+          {!confirmando && <button className="btn" onClick={() => setConfirmando(true)}>Já paguei</button>}
+          {confirmando && (
+            <>
+              <p role="status"><strong>O Pix de {moeda(pix.valorCentavos)} já foi concluído no seu banco?</strong></p>
+              <button className="btn" disabled={informando} onClick={informar}>{informando ? 'Enviando...' : 'Sim, avisar o credor'}</button>
+              <button className="btn sec" disabled={informando} onClick={() => setConfirmando(false)}>Ainda não paguei</button>
+            </>
+          )}
         </>
       )}
       <button className="btn sec" onClick={aoFechar}>Fechar</button>
@@ -168,7 +194,20 @@ function PagarPix({ emprestimoId, aoFechar }: { emprestimoId: number; aoFechar: 
 
 function Detalhe() {
   const { id } = useParams();
-  const { dados, erro, recarregar } = useDados<{ emprestimo: EmprestimoDto; pixDisponivel: boolean }>(`/devedor/emprestimos/${id}`);
+  const { dados, erro, recarregar } = useDados<{ emprestimo: EmprestimoDto; pixDisponivel: boolean; avisoPagamento: { id: number; status: 'pendente' | 'recusado'; valorCentavos: number; motivo: string | null } | null }>(`/devedor/emprestimos/${id}`);
+  const avisar = useAviso();
+  const aviso = dados?.avisoPagamento;
+  const aguardando = aviso?.status === 'pendente';
+  const cancelarAviso = async () => {
+    try {
+      await api('POST', `/devedor/avisos-pagamento/${aviso!.id}/cancelar`);
+      avisar('Aviso de pagamento cancelado.');
+    } catch (x) {
+      avisar(mensagemErro(x));
+    } finally {
+      recarregar();
+    }
+  };
   const [pagando, setPagando] = useState(false);
   const e = dados?.emprestimo;
   return (
@@ -184,7 +223,17 @@ function Detalhe() {
               <Progresso pago={e.saldo.totalPago} total={e.saldo.totalDevido} />
               <div className="linha suave"><span>Pago {moeda(e.saldo.totalPago)}</span><span>Total {moeda(e.saldo.totalDevido)}</span></div>
               {e.saldo.credito > 0 && <div className="txt-ok">Crédito a seu favor: {moeda(e.saldo.credito)}</div>}
-              {dados?.pixDisponivel && e.valorPagarAgora > 0 && (
+              {aguardando && (
+                <div className="aviso-pagamento" role="status">
+                  <strong>Pagamento de {moeda(aviso!.valorCentavos)} informado</strong>
+                  <span>Aguardando a confirmação do credor.</span>
+                  <button className="link-txt" onClick={cancelarAviso}>Cancelar aviso</button>
+                </div>
+              )}
+              {aviso?.status === 'recusado' && (
+                <p className="erro quebra" role="status">Pagamento não confirmado{aviso.motivo ? `: ${aviso.motivo}` : '.'}</p>
+              )}
+              {!aguardando && dados?.pixDisponivel && e.valorPagarAgora > 0 && (
                 <button className="btn" onClick={() => setPagando(true)}>Pagar {moeda(e.valorPagarAgora)} com Pix</button>
               )}
             </section>
@@ -212,7 +261,7 @@ function Detalhe() {
             <h2>Parcelas</h2>
             <div className="cartao sem-pad"><ListaParcelas parcelas={e.saldo.parcelas} encargos={e.encargos} /></div>
           </section>
-          {pagando && <PagarPix emprestimoId={e.id} aoFechar={() => setPagando(false)} />}
+          {pagando && <PagarPix emprestimoId={e.id} aoFechar={() => setPagando(false)} aoInformar={() => { setPagando(false); recarregar(); }} />}
         </div>
       )}
     </Tela>

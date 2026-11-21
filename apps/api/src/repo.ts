@@ -89,6 +89,21 @@ const C_PEDIDO = `id, pessoa_id AS pessoaId, valor_centavos AS valorCentavos, nu
   primeiro_vencimento AS primeiroVencimento, finalidade, status, motivo_recusa AS motivoRecusa,
   emprestimo_id AS emprestimoId, criado_em AS criadoEm, decidido_em AS decididoEm`;
 
+export type StatusAvisoPagamento = 'pendente' | 'confirmado' | 'recusado' | 'cancelado';
+
+export interface AvisoPagamento {
+  id: number;
+  emprestimoId: number;
+  valorCentavos: number;
+  txid: string;
+  status: StatusAvisoPagamento;
+  motivo: string | null;
+  criadoEm: string;
+}
+
+const C_AVISO = `id, emprestimo_id AS emprestimoId, valor_centavos AS valorCentavos, txid, status, motivo, criado_em AS criadoEm`;
+const MAX_AVISOS_24H = 5;
+
 export interface DadosPixConfig {
   chave: string;
   nome: string;
@@ -259,6 +274,57 @@ export class Repo {
         .prepare("UPDATE pedidos SET status = 'aprovado', emprestimo_id = ?, decidido_por = ?, decidido_em = ? WHERE id = ?")
         .run(emprestimoId, por, agora.toISOString(), id);
       return emprestimoId;
+    });
+  }
+
+  // Pagamentos informados pelo devedor: só viram pagamento quando o admin confirma
+  avisoPagamento(id: number): AvisoPagamento | null {
+    return (this.db.prepare(`SELECT ${C_AVISO} FROM avisos_pagamento WHERE id = ?`).get(id) as unknown as AvisoPagamento) ?? null;
+  }
+  avisoPendente(emprestimoId: number): AvisoPagamento | null {
+    return (this.db.prepare(`SELECT ${C_AVISO} FROM avisos_pagamento WHERE emprestimo_id = ? AND status = 'pendente'`).get(emprestimoId) as unknown as AvisoPagamento) ?? null;
+  }
+  ultimoAvisoPagamento(emprestimoId: number): AvisoPagamento | null {
+    return (this.db.prepare(`SELECT ${C_AVISO} FROM avisos_pagamento WHERE emprestimo_id = ? ORDER BY id DESC LIMIT 1`).get(emprestimoId) as unknown as AvisoPagamento) ?? null;
+  }
+  avisosPendentes(): AvisoPagamento[] {
+    return this.db.prepare(`SELECT ${C_AVISO} FROM avisos_pagamento WHERE status = 'pendente' ORDER BY id`).all() as unknown as AvisoPagamento[];
+  }
+  contarAvisosPendentes(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM avisos_pagamento WHERE status = 'pendente'").get() as { n: number }).n;
+  }
+  criarAvisoPagamento(emprestimoId: number, valorCentavos: number, txid: string, agora: Date): number | 'aberto' | 'limite' {
+    return transacao(this.db, () => {
+      if (this.avisoPendente(emprestimoId)) return 'aberto';
+      const desde = new Date(agora.getTime() - 86_400_000).toISOString();
+      const { n } = this.db.prepare('SELECT COUNT(*) AS n FROM avisos_pagamento WHERE emprestimo_id = ? AND criado_em > ?').get(emprestimoId, desde) as { n: number };
+      if (n >= MAX_AVISOS_24H) return 'limite';
+      const r = this.db
+        .prepare('INSERT INTO avisos_pagamento (emprestimo_id, valor_centavos, txid, criado_em) VALUES (?, ?, ?, ?)')
+        .run(emprestimoId, valorCentavos, txid, agora.toISOString());
+      return Number(r.lastInsertRowid);
+    });
+  }
+  cancelarAvisoPagamento(id: number, agora: Date): boolean {
+    const r = this.db.prepare("UPDATE avisos_pagamento SET status = 'cancelado', decidido_em = ? WHERE id = ? AND status = 'pendente'").run(agora.toISOString(), id);
+    return Number(r.changes) > 0;
+  }
+  recusarAvisoPagamento(id: number, motivo: string | null, por: string, agora: Date): boolean {
+    const r = this.db
+      .prepare("UPDATE avisos_pagamento SET status = 'recusado', motivo = ?, decidido_por = ?, decidido_em = ? WHERE id = ? AND status = 'pendente'")
+      .run(motivo, por, agora.toISOString(), id);
+    return Number(r.changes) > 0;
+  }
+  /** Registra o pagamento e fecha o aviso juntos. Devolve null se o aviso já foi respondido. */
+  confirmarAvisoPagamento(id: number, d: Pick<DadosPagamento, 'data' | 'valorCentavos'>, por: string, agora: Date): number | null {
+    return transacao(this.db, () => {
+      const a = this.avisoPagamento(id);
+      if (!a || a.status !== 'pendente') return null;
+      const pagamentoId = this.registrarPagamento(a.emprestimoId, { ...d, observacao: `Informado pelo devedor (${a.txid})` });
+      this.db
+        .prepare("UPDATE avisos_pagamento SET status = 'confirmado', pagamento_id = ?, decidido_por = ?, decidido_em = ? WHERE id = ?")
+        .run(pagamentoId, por, agora.toISOString(), id);
+      return pagamentoId;
     });
   }
 

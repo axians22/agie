@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, parsePercentual, type TipoMulta } from '@emprestimos/dominio';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
-import { api, mensagemErro, useDados, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
+import { api, mensagemErro, useDados, type AvisoPagamentoDto, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
   CampoInteiro, ConvitePush, Notificacoes, useSincronizarPush, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
@@ -21,7 +21,7 @@ function Avatar({ nome, url }: { nome: string; url?: string | null }) {
 }
 
 function Inicio() {
-  const r = useDados<{ resumo: Resumo; pedidosPendentes: number }>('/admin/resumo');
+  const r = useDados<{ resumo: Resumo; pedidosPendentes: number; avisosPagamento: number }>('/admin/resumo');
   const l = useDados<ListaE>('/admin/emprestimos');
   const res = r.dados?.resumo;
   const atrasados = (l.dados?.emprestimos ?? []).filter((e) => e.temAtraso);
@@ -32,6 +32,12 @@ function Inicio() {
       {res && (
         <>
           <ConvitePush />
+          {!!r.dados?.avisosPagamento && (
+            <Link to="/pedidos" className="alerta alerta-pagamento">
+              <strong>{r.dados.avisosPagamento === 1 ? '1 pagamento para confirmar' : `${r.dados.avisosPagamento} pagamentos para confirmar`}</strong>
+              <span>Conferir ›</span>
+            </Link>
+          )}
           {!!r.dados?.pedidosPendentes && (
             <Link to="/pedidos" className="alerta">
               <strong>{r.dados.pedidosPendentes === 1 ? '1 pedido aguardando' : `${r.dados.pedidosPendentes} pedidos aguardando`}</strong>
@@ -545,16 +551,99 @@ function CartaoPedido({ p }: { p: PedidoDto }) {
   );
 }
 
-function PedidosAdmin() {
+function CartaoAvisoPagamento({ a, hoje, aoMudar }: { a: AvisoPagamentoDto; hoje: string; aoMudar: () => void }) {
+  const avisar = useAviso();
+  const nome = nomePessoa(a.pessoa);
+  const [modo, setModo] = useState<'confirmar' | 'recusar' | null>(null);
+  const [valor, setValor] = useState(reaisCampo(a.valorCentavos));
+  const [data, setData] = useState(hoje);
+  const [motivo, setMotivo] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+
+  const enviar = async (e: FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    const valorCentavos = parseMoeda(valor);
+    if (modo === 'confirmar' && !valorCentavos) return setErro('Informe o valor recebido.');
+    setOcupado(true);
+    try {
+      if (modo === 'confirmar') {
+        await api('POST', `/admin/avisos-pagamento/${a.id}/confirmar`, { data, valorCentavos });
+        avisar('Pagamento confirmado.');
+      } else {
+        await api('POST', `/admin/avisos-pagamento/${a.id}/recusar`, { motivo: motivo.trim() || null });
+        avisar('Pagamento recusado.');
+      }
+      setModo(null);
+      aoMudar();
+    } catch (x) {
+      setErro(mensagemErro(x));
+    } finally {
+      setOcupado(false);
+    }
+  };
+
+  return (
+    <article className="cartao bloco-acoes">
+      <div className="linha">
+        <div className="pessoa-id">
+          <Avatar nome={nome} url={a.pessoa.avatarUrl} />
+          <div className="min0">
+            <strong className="corta bloco">{nome}</strong>
+            <Link className="suave corta bloco" to={`/emprestimos/${a.emprestimoId}`}>{a.emprestimoNome || `Empréstimo #${a.emprestimoId}`}</Link>
+          </div>
+        </div>
+        <strong className="dir">{moeda(a.valorCentavos)}</strong>
+      </div>
+      <p className="suave peq quebra">Informado em {dataBr(a.criadoEm)} · Identificador {a.txid}</p>
+      <div className="grade2">
+        <button className="btn perigo" onClick={() => setModo('recusar')}>Recusar</button>
+        <button className="btn" onClick={() => setModo('confirmar')}>Confirmar</button>
+      </div>
+      {modo && (
+        <Modal titulo={modo === 'confirmar' ? 'Confirmar pagamento' : 'Recusar pagamento'} aoFechar={() => setModo(null)}>
+          <form className="form" onSubmit={enviar}>
+            {modo === 'confirmar' ? (
+              <>
+                <p className="suave">Confira no extrato do banco antes de confirmar. A baixa será feita no empréstimo.</p>
+                <label>Valor recebido (R$)<CampoMoeda required value={valor} onChange={(x) => setValor(x.target.value)} /></label>
+                <label>Data do recebimento<input required type="date" max={hoje} value={data} onChange={(x) => setData(x.target.value)} /></label>
+              </>
+            ) : (
+              <label>Motivo (opcional)<input maxLength={300} value={motivo} onChange={(x) => setMotivo(x.target.value)} /><small>A pessoa verá este motivo no app.</small></label>
+            )}
+            {erro && <p className="erro" role="alert">{erro}</p>}
+            <button className={modo === 'confirmar' ? 'btn' : 'btn perigo'} disabled={ocupado}>{ocupado ? 'Salvando...' : modo === 'confirmar' ? 'Confirmar recebimento' : 'Recusar pagamento'}</button>
+            <button type="button" className="btn sec" onClick={() => setModo(null)}>Voltar</button>
+          </form>
+        </Modal>
+      )}
+    </article>
+  );
+}
+
+function PedidosAdmin({ aoMudar }: { aoMudar: () => void }) {
   const { dados, erro, recarregar } = useDados<{ pedidos: PedidoDto[] }>('/admin/pedidos');
+  const avisos = useDados<{ avisos: AvisoPagamentoDto[]; hoje: string }>('/admin/avisos-pagamento');
   useAtualizacao(recarregar);
+  useAtualizacao(avisos.recarregar);
   const pendentes = dados?.pedidos.filter((p) => p.status === 'pendente') ?? [];
   const respondidos = dados?.pedidos.filter((p) => p.status !== 'pendente') ?? [];
   return (
-    <Tela titulo="Pedidos">
+    <Tela titulo="Pedidos e pagamentos">
       {erro && !dados && <Falha mensagem={erro} tentar={recarregar} />}
+      {avisos.erro && !avisos.dados && <Falha mensagem={avisos.erro} tentar={avisos.recarregar} />}
       {!erro && !dados && <Carregando />}
-      {dados?.pedidos.length === 0 && <Vazio titulo="Nenhum pedido recebido." />}
+      {!!avisos.dados?.avisos.length && (
+        <section>
+          <h2>Pagamentos para confirmar ({avisos.dados.avisos.length})</h2>
+          <div className="grade">
+            {avisos.dados.avisos.map((a) => <CartaoAvisoPagamento key={a.id} a={a} hoje={avisos.dados!.hoje} aoMudar={() => { avisos.recarregar(); aoMudar(); }} />)}
+          </div>
+        </section>
+      )}
+      {dados?.pedidos.length === 0 && avisos.dados?.avisos.length === 0 && <Vazio titulo="Nenhum pedido ou pagamento pendente." />}
       {pendentes.length > 0 && (
         <section>
           <h2>Aguardando ({pendentes.length})</h2>
@@ -897,17 +986,17 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
 }
 
 export function AppAdmin({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
-  const { dados, recarregar } = useDados<{ resumo: Resumo; pedidosPendentes: number }>('/admin/resumo');
+  const { dados, recarregar } = useDados<{ resumo: Resumo; pedidosPendentes: number; avisosPagamento: number }>('/admin/resumo');
   const { pathname } = useLocation();
   useAtualizacao(recarregar);
   useSincronizarPush();
   useEffect(() => recarregar(), [pathname, recarregar]);
   return (
     <div className="app">
-      <Navegacao papel="admin" atrasados={dados?.resumo.emprestimosAtrasados} pedidos={dados?.pedidosPendentes} />
+      <Navegacao papel="admin" atrasados={dados?.resumo.emprestimosAtrasados} pedidos={(dados?.pedidosPendentes ?? 0) + (dados?.avisosPagamento ?? 0)} />
       <Routes>
         <Route path="/" element={<Inicio />} />
-        <Route path="/pedidos" element={<PedidosAdmin />} />
+        <Route path="/pedidos" element={<PedidosAdmin aoMudar={recarregar} />} />
         <Route path="/pedidos/:id" element={<PedidoAdmin aoMudar={recarregar} />} />
         <Route path="/pessoas" element={<Pessoas />} />
         <Route path="/pessoas/nova" element={<PessoaForm />} />

@@ -238,3 +238,6 @@ button.link-txt { flex: none; min-height: 44px; padding: 0 4px; background: none
   .grade2 .valor { font-size: .82rem; }
 }
 .bloco-acoes { display: flex; flex-direction: column; gap: 10px; }
+.alerta-pagamento { background: var(--ambar-fundo); border-color: var(--ambar-vivo); color: var(--ambar-texto); }
+.aviso-pagamento { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--ambar-fundo); color: var(--ambar-texto); }
+.aviso-pagamento .link-txt { min-height: 36px; padding: 0; color: var(--ambar-texto); text-decoration: underline; }

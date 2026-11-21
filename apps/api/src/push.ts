@@ -177,6 +177,8 @@ export class ServicoPush {
       for (const { pessoaId, usuarioId } of destinos) {
         const grupos = { tres: new Set<number>(), hoje: new Set<number>(), atraso: new Set<number>() };
         for (const v of this.repo.visoes(hoje, pessoaId)) {
+          // Já informou o pagamento: não cobra enquanto o credor não responder.
+          if (this.repo.avisoPendente(v.emprestimo.id)) continue;
           for (const p of v.consolidado.saldo.parcelas) {
             if (p.restante <= 0) continue;
             if (p.vencimento === em3) grupos.tres.add(v.emprestimo.id);

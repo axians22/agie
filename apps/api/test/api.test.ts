@@ -722,6 +722,122 @@ describe('notificações', () => {
   });
 });
 
+describe('pagamento informado pelo devedor', () => {
+  const P256 = Buffer.alloc(65, 4).toString('base64url');
+  const AUTH = Buffer.alloc(16, 7).toString('base64url');
+  const endpoint = (n: string) => `https://fcm.googleapis.com/fcm/send/${n}`;
+  let t: Ctx;
+  let admin: string;
+  let ana: string;
+  let bruno: string;
+  const informar = (cookie = ana, id = t.empA) => t.chamar('POST', `/api/devedor/emprestimos/${id}/pagamento-informado`, { cookie });
+  const novo = async () => ((await (await informar()).json()) as { id: number }).id;
+  const saldo = () => t.repo.visaoPorId(t.empA, '2026-06-15')!.consolidado.saldo.saldo;
+  beforeEach(async () => {
+    t = montar();
+    admin = await t.login(EMAILS_TESTE.admin);
+    ana = await t.login(EMAILS_TESTE.devedorA);
+    bruno = await t.login(EMAILS_TESTE.devedorB);
+    for (const [c, n] of [[admin, 'admin'], [ana, 'ana'], [bruno, 'bruno']] as const) {
+      await t.chamar('POST', '/api/push/inscricao', { cookie: c, corpo: { endpoint: endpoint(n), keys: { p256dh: P256, auth: AUTH } } });
+    }
+  });
+
+  test('avisa o admin sem dar baixa e sem mostrar valor na notificação', async () => {
+    const antes = saldo();
+    assert.equal((await informar()).status, 201);
+    await t.push.aguardar();
+    assert.equal(saldo(), antes);
+    assert.deepEqual(t.enviados.map((e) => [e.endpoint, e.mensagem.titulo]), [[endpoint('admin'), 'Pagamento informado']]);
+    assert.ok(!JSON.stringify(t.enviados).includes('1500'));
+    const r = (await (await t.chamar('GET', '/api/admin/resumo', { cookie: admin })).json()) as { avisosPagamento: number };
+    assert.equal(r.avisosPagamento, 1);
+    const l = (await (await t.chamar('GET', '/api/admin/avisos-pagamento', { cookie: admin })).json()) as { avisos: Array<{ valorCentavos: number; pessoa: { email: string } }> };
+    assert.deepEqual(l.avisos.map((a) => [a.valorCentavos, a.pessoa.email]), [[150000, EMAILS_TESTE.devedorA]]);
+  });
+
+  test('o devedor não escolhe o valor, não repete e não informa dívida de outro', async () => {
+    assert.equal((await t.chamar('POST', `/api/devedor/emprestimos/${t.empA}/pagamento-informado`, { cookie: ana, corpo: { valorCentavos: 1 } })).status, 201);
+    assert.equal(t.repo.avisoPendente(t.empA)!.valorCentavos, 150000);
+    assert.equal((await informar()).status, 409);
+    assert.equal((await informar(ana, t.empB)).status, 404);
+  });
+
+  test('confirmar registra o pagamento uma única vez e avisa o devedor', async () => {
+    const id = await novo();
+    await t.push.aguardar();
+    t.enviados.length = 0;
+    const antes = saldo();
+    const rs = await Promise.all([1, 2].map(() => t.chamar('POST', `/api/admin/avisos-pagamento/${id}/confirmar`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 150000 } })));
+    assert.deepEqual(rs.map((r) => r.status).sort(), [201, 409]);
+    await t.push.aguardar();
+    assert.equal(saldo(), antes - 150000);
+    assert.deepEqual(t.enviados.map((e) => [e.endpoint, e.mensagem.titulo]), [[endpoint('ana'), 'Pagamento confirmado']]);
+    const d = await (await t.chamar('GET', `/api/devedor/emprestimos/${t.empA}`, { cookie: ana })).text();
+    assert.ok(!d.includes('Informado pelo devedor'));
+  });
+
+  test('admin pode confirmar o valor realmente recebido', async () => {
+    const id = await novo();
+    const antes = saldo();
+    await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/confirmar`, { cookie: admin, corpo: { data: '2026-06-14', valorCentavos: 70000 } });
+    assert.equal(saldo(), antes - 70000);
+    assert.equal((await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/recusar`, { cookie: admin, corpo: {} })).status, 409);
+  });
+
+  test('recusa data futura e valor inválido', async () => {
+    const id = await novo();
+    for (const corpo of [{ data: '2026-06-16', valorCentavos: 100 }, { data: '2026-06-15', valorCentavos: 0 }]) {
+      assert.equal((await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/confirmar`, { cookie: admin, corpo })).status, 400);
+    }
+    assert.equal(t.repo.avisoPendente(t.empA)!.id, id);
+  });
+
+  test('recusar não dá baixa, mostra o motivo e permite informar de novo', async () => {
+    const id = await novo();
+    await t.push.aguardar();
+    t.enviados.length = 0;
+    const antes = saldo();
+    await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/recusar`, { cookie: admin, corpo: { motivo: 'Não caiu' } });
+    await t.push.aguardar();
+    assert.equal(saldo(), antes);
+    assert.deepEqual(t.enviados.map((e) => e.mensagem.titulo), ['Pagamento não confirmado']);
+    assert.ok(!JSON.stringify(t.enviados).includes('Não caiu'));
+    const d = (await (await t.chamar('GET', `/api/devedor/emprestimos/${t.empA}`, { cookie: ana })).json()) as { avisoPagamento: { status: string; motivo: string } };
+    assert.deepEqual([d.avisoPagamento.status, d.avisoPagamento.motivo], ['recusado', 'Não caiu']);
+    assert.equal((await informar()).status, 201);
+  });
+
+  test('só o dono cancela e só admin responde', async () => {
+    const id = await novo();
+    assert.equal((await t.chamar('POST', `/api/devedor/avisos-pagamento/${id}/cancelar`, { cookie: bruno })).status, 404);
+    for (const acao of ['confirmar', 'recusar']) {
+      assert.equal((await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/${acao}`, { cookie: ana, corpo: { data: '2026-06-15', valorCentavos: 1 } })).status, 403);
+    }
+    assert.equal((await t.chamar('GET', '/api/admin/avisos-pagamento', { cookie: ana })).status, 403);
+    assert.equal((await t.chamar('POST', `/api/devedor/avisos-pagamento/${id}/cancelar`, { cookie: ana })).status, 200);
+    assert.equal(t.repo.avisoPendente(t.empA), null);
+  });
+
+  test('limita avisos repetidos em 24 horas', async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = await novo();
+      await t.chamar('POST', `/api/devedor/avisos-pagamento/${id}/cancelar`, { cookie: ana });
+    }
+    assert.equal((await informar()).status, 409);
+    t.avancar(new Date(AGORA.getTime() + 25 * 3_600_000));
+    assert.equal((await informar()).status, 201);
+  });
+
+  test('não envia lembrete enquanto o pagamento aguarda confirmação', async () => {
+    await novo();
+    await t.push.aguardar();
+    t.enviados.length = 0;
+    await t.push.rodarLembretes(new Date('2026-07-10T12:30:00Z'));
+    assert.ok(!t.enviados.some((e) => e.endpoint === endpoint('ana')));
+  });
+});
+
 describe('backup em arquivo', () => {
   test('cria cópia íntegra e mantém só as recentes', () => {
     const pasta = mkdtempSync(join(tmpdir(), 'emprestimos-bkp-'));

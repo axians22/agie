@@ -19,7 +19,7 @@ aparelho, e a maioria usará somente o celular.
 - Rotas fechadas por padrão. Rotas do devedor sempre filtram pela pessoa da sessão e usam uma lista explícita de
   campos, sem observações do credor.
 - Regras de cálculo em `packages/dominio`, verificadas contra casos gerados pelo código Dart original.
-- Pix por BR Code estático, com baixa confirmada pelo credor.
+- Pix por BR Code estático. O devedor informa que pagou e a baixa só acontece quando o credor confirma.
 - Usuário faz um pedido por vez. O admin aprova ou recusa; aprovar cria o empréstimo na mesma transação e nunca acima
   do valor pedido.
 

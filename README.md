@@ -42,6 +42,9 @@ depois disso. O e-mail de `ADMIN_EMAILS` é o administrador principal: só ele a
 O usuário pede um empréstimo em **Pedidos**. O admin aprova ou recusa, e a aprovação gera o empréstimo, as parcelas e o
 QR Code. O backup JSON não inclui os pedidos; o backup diário do banco inclui.
 
+O Pix estático não avisa o app sobre o recebimento. O devedor toca em **Já paguei**, o admin recebe o aviso, confere no
+banco e confirma; só então o pagamento é registrado.
+
 As notificações usam Web Push e não exigem configuração: as chaves são criadas no primeiro início e ficam no volume
 `/data`. Cada pessoa ativa em **Config**. No iPhone, é preciso iOS 16.4 ou mais novo e o app na Tela de Início.
 

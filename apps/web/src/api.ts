@@ -123,4 +123,14 @@ export interface PedidoDto {
   pessoa?: PessoaDto;
 }
 
+export interface AvisoPagamentoDto {
+  id: number;
+  emprestimoId: number;
+  emprestimoNome: string | null;
+  valorCentavos: number;
+  txid: string;
+  criadoEm: string;
+  pessoa: PessoaDto;
+}
+
 export type { Resumo };
