@@ -11,7 +11,12 @@ import {
   gerarParcelas,
   hojeBrasil,
   normalizarChavePix,
+  colarMoeda,
+  mascaraInteiro,
+  mascaraMoeda,
+  mascaraPercentual,
   parseMoeda,
+  parsePercentual,
   percentual,
   valorParaPagarAgora,
   type TipoMulta,
@@ -99,6 +104,36 @@ describe('formatos', () => {
     assert.equal(parseMoeda('1,234'), null);
   });
   test('dia no Brasil', () => assert.equal(hojeBrasil(new Date('2026-03-01T02:00:00Z')), '2026-02-28'));
+});
+
+describe('máscaras de campos numéricos', () => {
+  test('dinheiro aceita só dígitos e preenche pela direita', () => {
+    const casos: Array<[string, string]> = [['', ''], ['abc', ''], ['-', ''], ['0', ''], ['1', '0,01'], ['12', '0,12'], ['123', '1,23'], ['a1b2c3', '1,23'], ['-5e2', '0,52'], ['120000', '1.200,00'], ['1200,00', '1.200,00'], ['1.234.567,89', '1.234.567,89']];
+    for (const [entrada, saida] of casos) assert.equal(mascaraMoeda(entrada), saida, entrada);
+    assert.equal(mascaraMoeda('9'.repeat(20)), '999.999.999,99');
+    assert.equal(parseMoeda(mascaraMoeda('123456')), 123456);
+  });
+  test('dinheiro colado mantém o valor e recusa texto', () => {
+    assert.equal(colarMoeda('1200'), '1.200,00');
+    assert.equal(colarMoeda('R$ 1.234,56'), '1.234,56');
+    assert.equal(colarMoeda('12.5'), '12,50');
+    for (const v of ['abc', '-5', '1e5', '12a', '1,234.56', '999999999999']) assert.equal(colarMoeda(v), null, v);
+  });
+  test('inteiro aceita só dígitos e respeita o máximo', () => {
+    assert.equal(mascaraInteiro('a1b2', '', 360), '12');
+    assert.equal(mascaraInteiro('-1e2', '', 360), '12');
+    assert.equal(mascaraInteiro('007', '', 360), '7');
+    assert.equal(mascaraInteiro('0', '', 360), '');
+    assert.equal(mascaraInteiro('360', '36', 360), '360');
+    assert.equal(mascaraInteiro('361', '36', 360), '36');
+  });
+  test('percentual aceita uma vírgula, duas casas e o máximo', () => {
+    const casos: Array<[string, string, string]> = [['a2', '', '2'], ['2,5', '2,', '2,5'], ['2.5', '2', '2,5'], ['2,555', '2,55', '2,55'], ['2,,5', '2,', '2,5'], [',5', '', '0,5'], ['05', '0', '5'], ['100', '10', '100'], ['101', '10', '10'], ['100,01', '100,0', '100,0'], ['-1e', '', '1']];
+    for (const [entrada, anterior, saida] of casos) assert.equal(mascaraPercentual(entrada, anterior), saida, entrada);
+    assert.equal(parsePercentual('2,5'), 2.5);
+    assert.equal(parsePercentual(''), 0);
+    for (const v of ['1e2', 'abc', '-1', '1,2,3']) assert.equal(parsePercentual(v), null, v);
+  });
 });
 
 describe('Pix', () => {

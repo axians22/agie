@@ -266,6 +266,49 @@ export function hojeBrasil(agora: Date = new Date()): DataISO {
   }).format(agora);
 }
 
+const MAX_DIGITOS_MOEDA = 11;
+
+/** Máscara de dinheiro: só aceita dígitos e preenche da direita para a esquerda ("123" vira "1,23"). */
+export function mascaraMoeda(texto: string): string {
+  const digitos = texto.replace(/\D/g, '').replace(/^0+/, '').slice(0, MAX_DIGITOS_MOEDA);
+  if (!digitos) return '';
+  const completo = digitos.padStart(3, '0');
+  const inteiro = completo.slice(0, -2).replace(/\B(?=(\d{3})+$)/g, '.');
+  return `${inteiro},${completo.slice(-2)}`;
+}
+
+/** Valor colado: "1200" é R$ 1.200,00. Devolve null se não for um valor de dinheiro. */
+export function colarMoeda(texto: string): string | null {
+  const centavos = parseMoeda(texto.replace(/R\$|\s/g, ''));
+  if (centavos === null || centavos > 99_999_999_999) return null;
+  return mascaraMoeda(String(centavos));
+}
+
+/** Só dígitos, sem zero à esquerda. Acima do máximo, mantém o valor anterior. */
+export function mascaraInteiro(texto: string, anterior: string, max: number): string {
+  const digitos = texto.replace(/\D/g, '').replace(/^0+/, '');
+  return digitos && Number(digitos) > max ? anterior : digitos;
+}
+
+/** Dígitos e uma vírgula, com até duas casas. Acima do máximo, mantém o valor anterior. */
+export function mascaraPercentual(texto: string, anterior: string, max = 100): string {
+  const t = texto.replace(/\./g, ',').replace(/[^\d,]/g, '');
+  const virgula = t.indexOf(',');
+  let inteiro = (virgula < 0 ? t : t.slice(0, virgula)).replace(/^0+(?=\d)/, '');
+  if (virgula < 0) return inteiro && Number(inteiro) > max ? anterior : inteiro;
+  inteiro ||= '0';
+  const decimais = t.slice(virgula + 1).replace(/,/g, '').slice(0, 2);
+  return Number(`${inteiro}.${decimais || 0}`) > max ? anterior : `${inteiro},${decimais}`;
+}
+
+/** Converte "2,5" em 2.5. Vazio é zero; qualquer outro formato é null. */
+export function parsePercentual(texto: string): number | null {
+  const t = texto.trim();
+  if (!t) return 0;
+  if (!/^\d+(?:[.,]\d+)?$/.test(t)) return null;
+  return Number(t.replace(',', '.'));
+}
+
 /** Converte "1.234,56", "1234,56" ou "1234.56" em centavos; null se inválido. */
 export function parseMoeda(texto: string): number | null {
   let t = texto.replace('R$', '').trim();

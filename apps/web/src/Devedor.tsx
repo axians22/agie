@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
 import { api, mensagemErro, useDados, type EmprestimoDto, type PedidoDto, type Resumo, type Usuario } from './api.ts';
 import {
-  CartaoEmprestimo, Carregando, dataBr, Falha, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
+  CampoInteiro, CampoMoeda, CartaoEmprestimo, Carregando, dataBr, Falha, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
 } from './comum.tsx';
 
@@ -323,8 +323,8 @@ function NovoPedido() {
   return (
     <Tela titulo="Pedir empréstimo" voltar>
       <form className="form" onSubmit={enviar}>
-        <label>Valor (R$)<input required inputMode="decimal" placeholder="0,00" {...campo('valor')} /></label>
-        <label>Número de parcelas<input required type="number" inputMode="numeric" min={1} max={360} {...campo('numParcelas')} /></label>
+        <label>Valor (R$)<CampoMoeda required {...campo('valor')} /></label>
+        <label>Número de parcelas<CampoInteiro required max={360} {...campo('numParcelas')} /></label>
         <label>1º vencimento desejado<input required type="date" min={hoje} {...campo('primeiroVencimento')} /></label>
         <label>Para que é o empréstimo? (opcional)<input maxLength={80} placeholder="Ex.: Reforma" {...campo('finalidade')} /></label>
         {previa && (

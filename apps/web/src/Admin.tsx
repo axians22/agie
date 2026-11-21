@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, type TipoMulta } from '@emprestimos/dominio';
+import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, parsePercentual, type TipoMulta } from '@emprestimos/dominio';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
 import { api, mensagemErro, useDados, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
-  CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
+  CampoInteiro, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
 } from './comum.tsx';
 
@@ -288,7 +288,7 @@ function FormPagamento({ emprestimoId, pagamento, sugestao, aoFechar, aoSalvar }
   return (
     <Modal titulo={pagamento ? 'Editar pagamento' : 'Registrar pagamento'} aoFechar={aoFechar}>
       <form className="form" onSubmit={salvar}>
-        <label>Valor (R$)<input required inputMode="decimal" value={valor} onChange={(e) => setValor(e.target.value)} /></label>
+        <label>Valor (R$)<CampoMoeda required value={valor} onChange={(e) => setValor(e.target.value)} /></label>
         <label>Data<input required type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
         <label>Observação interna<input maxLength={500} value={obs} onChange={(e) => setObs(e.target.value)} /><small>O devedor não vê este campo.</small></label>
         {erro && <p className="erro" role="alert">{erro}</p>}
@@ -449,19 +449,14 @@ function EmprestimoCampos({ id, pessoas, inicial }: { id?: string; pessoas: Pess
     return { primeira: p[0]!, ultima: p[p.length - 1]!, n };
   }, [f.valor, f.numParcelas, f.primeiroVencimento]);
 
-  const numero = (t: string) => {
-    const v = Number(t.trim().replace(',', '.') || '0');
-    return Number.isFinite(v) && v >= 0 ? v : null;
-  };
-
   const salvar = async (e: FormEvent) => {
     e.preventDefault();
     setErro(null);
     const valorTotalCentavos = parseMoeda(f.valor);
     const numParcelas = Number(f.numParcelas);
-    const jurosAoMesPct = numero(f.juros);
+    const jurosAoMesPct = parsePercentual(f.juros);
     const tipoMulta = Number(f.tipoMulta) as TipoMulta;
-    const multaValor = tipoMulta === 0 ? 0 : tipoMulta === 1 ? parseMoeda(f.multa || '0') : numero(f.multa);
+    const multaValor = tipoMulta === 0 ? 0 : tipoMulta === 1 ? parseMoeda(f.multa || '0') : parsePercentual(f.multa);
     if (!valorTotalCentavos) return setErro('Informe um valor válido.');
     if (!Number.isInteger(numParcelas) || numParcelas < 1 || numParcelas > 360) return setErro('O número de parcelas deve ser de 1 a 360.');
     if (jurosAoMesPct === null || jurosAoMesPct > 100) return setErro('Informe juros de 0 a 100%.');
@@ -501,20 +496,21 @@ function EmprestimoCampos({ id, pessoas, inicial }: { id?: string; pessoas: Pess
       <form className="form" onSubmit={salvar}>
         <label>Pessoa<select {...campo('pessoaId')}>{pessoas.map((p) => <option key={p.id} value={p.id}>{nomePessoa(p)}</option>)}</select></label>
         <label>Nome do empréstimo (opcional)<input maxLength={80} placeholder="Ex.: Reforma" {...campo('nome')} /></label>
-        <label>Valor (R$)<input required inputMode="decimal" placeholder="0,00" {...campo('valor')} /></label>
+        <label>Valor (R$)<CampoMoeda required {...campo('valor')} /></label>
         <div className="campos2">
           <label>Data do empréstimo<input required type="date" {...campo('dataEmprestimo')} /></label>
           <label>1º vencimento<input required type="date" {...campo('primeiroVencimento')} /></label>
         </div>
-        <label>Número de parcelas<input required type="number" inputMode="numeric" min={1} max={360} {...campo('numParcelas')} /></label>
+        <label>Número de parcelas<CampoInteiro required max={360} {...campo('numParcelas')} /></label>
         {previa && (
           <p className="previa">{previa.n}x de {moeda(previa.primeira.valor)}{previa.ultima.valor !== previa.primeira.valor ? ` (última ${moeda(previa.ultima.valor)})` : ''}, até {dataBr(previa.ultima.vencimento)}</p>
         )}
         <fieldset>
           <legend>Por atraso</legend>
-          <label>Juros ao mês (%)<input inputMode="decimal" {...campo('juros')} /></label>
-          <label>Multa<select {...campo('tipoMulta')}><option value="0">Sem multa</option><option value="1">Valor fixo (R$)</option><option value="2">Percentual (%)</option></select></label>
-          {f.tipoMulta !== '0' && <label>{f.tipoMulta === '1' ? 'Valor da multa (R$)' : 'Multa (%)'}<input inputMode="decimal" {...campo('multa')} /></label>}
+          <label>Juros ao mês (%)<CampoPercentual {...campo('juros')} /></label>
+          <label>Multa<select value={f.tipoMulta} onChange={(e) => setF({ ...f, tipoMulta: e.target.value, multa: '' })}><option value="0">Sem multa</option><option value="1">Valor fixo (R$)</option><option value="2">Percentual (%)</option></select></label>
+          {f.tipoMulta === '1' && <label>Valor da multa (R$)<CampoMoeda {...campo('multa')} /></label>}
+          {f.tipoMulta === '2' && <label>Multa (%)<CampoPercentual {...campo('multa')} /></label>}
         </fieldset>
         {erro && <p className="erro" role="alert">{erro}</p>}
         <button className="btn" disabled={salvando}>{salvando ? 'Salvando...' : 'Salvar'}</button>
@@ -638,10 +634,6 @@ function AnalisePedido({ p, hoje, pixConfigurado, aoRecusar }: { p: PedidoDto; h
   const [recusando, setRecusando] = useState(false);
   const [motivo, setMotivo] = useState('');
   const campo = (k: keyof typeof f) => ({ value: f[k], onChange: (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value }) });
-  const numero = (t: string) => {
-    const v = Number(t.trim().replace(',', '.') || '0');
-    return Number.isFinite(v) && v >= 0 ? v : null;
-  };
 
   const previa = useMemo(() => {
     const v = parseMoeda(f.valor);
@@ -656,9 +648,9 @@ function AnalisePedido({ p, hoje, pixConfigurado, aoRecusar }: { p: PedidoDto; h
     setErro(null);
     const valorTotalCentavos = parseMoeda(f.valor);
     const numParcelas = Number(f.numParcelas);
-    const jurosAoMesPct = numero(f.juros);
+    const jurosAoMesPct = parsePercentual(f.juros);
     const tipoMulta = Number(f.tipoMulta) as TipoMulta;
-    const multaValor = tipoMulta === 0 ? 0 : tipoMulta === 1 ? parseMoeda(f.multa || '0') : numero(f.multa);
+    const multaValor = tipoMulta === 0 ? 0 : tipoMulta === 1 ? parseMoeda(f.multa || '0') : parsePercentual(f.multa);
     if (!valorTotalCentavos) return setErro('Informe um valor válido.');
     if (valorTotalCentavos > p.valorCentavos) return setErro('O valor aprovado não pode ser maior que o pedido.');
     if (!Number.isInteger(numParcelas) || numParcelas < 1 || numParcelas > 360) return setErro('O número de parcelas deve ser de 1 a 360.');
@@ -699,20 +691,21 @@ function AnalisePedido({ p, hoje, pixConfigurado, aoRecusar }: { p: PedidoDto; h
       {!pixConfigurado && <Link to="/config" className="alerta"><strong>Configure o Pix antes de aprovar</strong><span>Abrir Config ›</span></Link>}
       <form className="form" onSubmit={aprovar}>
         <label>Nome do empréstimo (opcional)<input maxLength={80} {...campo('nome')} /></label>
-        <label>Valor aprovado (R$)<input required inputMode="decimal" {...campo('valor')} /><small>Pode ser menor que o pedido, mas não maior.</small></label>
+        <label>Valor aprovado (R$)<CampoMoeda required {...campo('valor')} /><small>Pode ser menor que o pedido, mas não maior.</small></label>
         <div className="campos2">
           <label>Data do empréstimo<input required type="date" {...campo('dataEmprestimo')} /></label>
           <label>1º vencimento<input required type="date" {...campo('primeiroVencimento')} /></label>
         </div>
-        <label>Número de parcelas<input required type="number" inputMode="numeric" min={1} max={360} {...campo('numParcelas')} /></label>
+        <label>Número de parcelas<CampoInteiro required max={360} {...campo('numParcelas')} /></label>
         {previa && (
           <p className="previa">{previa.n}x de {moeda(previa.primeira.valor)}{previa.ultima.valor !== previa.primeira.valor ? ` (última ${moeda(previa.ultima.valor)})` : ''}, até {dataBr(previa.ultima.vencimento)}</p>
         )}
         <fieldset>
           <legend>Por atraso</legend>
-          <label>Juros ao mês (%)<input inputMode="decimal" {...campo('juros')} /></label>
-          <label>Multa<select {...campo('tipoMulta')}><option value="0">Sem multa</option><option value="1">Valor fixo (R$)</option><option value="2">Percentual (%)</option></select></label>
-          {f.tipoMulta !== '0' && <label>{f.tipoMulta === '1' ? 'Valor da multa (R$)' : 'Multa (%)'}<input inputMode="decimal" {...campo('multa')} /></label>}
+          <label>Juros ao mês (%)<CampoPercentual {...campo('juros')} /></label>
+          <label>Multa<select value={f.tipoMulta} onChange={(e) => setF({ ...f, tipoMulta: e.target.value, multa: '' })}><option value="0">Sem multa</option><option value="1">Valor fixo (R$)</option><option value="2">Percentual (%)</option></select></label>
+          {f.tipoMulta === '1' && <label>Valor da multa (R$)<CampoMoeda {...campo('multa')} /></label>}
+          {f.tipoMulta === '2' && <label>Multa (%)<CampoPercentual {...campo('multa')} /></label>}
         </fieldset>
         {erro && <p className="erro" role="alert">{erro}</p>}
         <button className="btn" disabled={salvando || !pixConfigurado}>{salvando ? 'Aprovando...' : 'Aprovar e gerar empréstimo'}</button>

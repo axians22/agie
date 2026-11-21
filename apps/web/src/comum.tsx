@@ -1,6 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState,
+  type ClipboardEvent, type InputHTMLAttributes, type ReactNode,
+} from 'react';
 import { Link, NavLink, useNavigate } from 'react-router';
-import type { ParcelaEstado, StatusParcela } from '@emprestimos/dominio';
+import { colarMoeda, mascaraInteiro, mascaraMoeda, mascaraPercentual, type ParcelaEstado, type StatusParcela } from '@emprestimos/dominio';
 import type { EmprestimoDto, Papel, StatusPedido } from './api.ts';
 
 const fmtMoeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -132,6 +135,79 @@ export function SeloEmprestimo({ e }: { e: Pick<EmprestimoDto, 'saldo' | 'temAtr
   if (e.saldo.quitado) return <span className="selo ok">Quitado</span>;
   if (e.temAtraso) return <span className="selo ruim">Em atraso</span>;
   return <span className="selo neutro">Em dia</span>;
+}
+
+type PropsCampoNumerico = Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type' | 'inputMode' | 'max'> & {
+  value: string;
+  onChange: (e: { target: { value: string } }) => void;
+};
+
+/** Dinheiro em reais. Sempre digita no fim, porque a máscara preenche da direita para a esquerda. */
+export function CampoMoeda({ value, onChange, ...resto }: PropsCampoNumerico) {
+  const ref = useRef<HTMLInputElement>(null);
+  const mostrar = mascaraMoeda(value);
+  const irParaFim = () => {
+    const el = ref.current;
+    // Não desfaz uma seleção: a pessoa pode ter selecionado tudo para apagar ou substituir.
+    if (el && document.activeElement === el && el.selectionStart === el.selectionEnd) el.setSelectionRange(el.value.length, el.value.length);
+  };
+  useLayoutEffect(irParaFim, [mostrar]);
+  const colar = (e: ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const v = colarMoeda(e.clipboardData.getData('text'));
+    if (v !== null) onChange({ target: { value: v } });
+  };
+  return (
+    <input
+      placeholder="0,00"
+      {...resto}
+      ref={ref}
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      value={mostrar}
+      onChange={(e) => onChange({ target: { value: mascaraMoeda(e.target.value) } })}
+      onPaste={colar}
+      onFocus={() => requestAnimationFrame(irParaFim)}
+      onClick={irParaFim}
+    />
+  );
+}
+
+/** Número inteiro positivo, como a quantidade de parcelas. */
+export function CampoInteiro({ value, onChange, max, ...resto }: PropsCampoNumerico & { max: number }) {
+  const colar = (e: ClipboardEvent<HTMLInputElement>) => {
+    if (!/^\s*\d+\s*$/.test(e.clipboardData.getData('text'))) e.preventDefault();
+  };
+  return (
+    <input
+      {...resto}
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      value={value}
+      onChange={(e) => onChange({ target: { value: mascaraInteiro(e.target.value, value, max) } })}
+      onPaste={colar}
+    />
+  );
+}
+
+/** Percentual de 0 a 100, com até duas casas. */
+export function CampoPercentual({ value, onChange, ...resto }: PropsCampoNumerico) {
+  const colar = (e: ClipboardEvent<HTMLInputElement>) => {
+    if (!/^\s*\d+(?:[.,]\d+)?\s*%?\s*$/.test(e.clipboardData.getData('text'))) e.preventDefault();
+  };
+  return (
+    <input
+      {...resto}
+      type="text"
+      inputMode="decimal"
+      autoComplete="off"
+      value={value}
+      onChange={(e) => onChange({ target: { value: mascaraPercentual(e.target.value, value) } })}
+      onPaste={colar}
+    />
+  );
 }
 
 const SELOS_PEDIDO: Record<StatusPedido, [string, string]> = {
