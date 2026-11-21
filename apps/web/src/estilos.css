@@ -204,3 +204,7 @@ button.item:hover, a.item:hover { background: var(--elevado); }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 1.5s !important; transition: none !important; }
 }
+
+button.link-txt { flex: none; min-height: 44px; padding: 0 4px; background: none; border: 0; font: inherit; cursor: pointer; }
+.lista-admins { margin-bottom: 12px; }
+.lista-admins > li { padding: 8px 0; }

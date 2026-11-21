@@ -66,10 +66,43 @@ export interface EmprestimoVisao {
   valorPagarAgora: number;
 }
 
+export interface DadosPixConfig {
+  chave: string;
+  nome: string;
+  cidade: string;
+}
+
 export class Repo {
   readonly db: DatabaseSync;
   constructor(db: DatabaseSync) {
     this.db = db;
+  }
+
+  // Configurações
+  pixConfig(): DadosPixConfig | null {
+    const r = this.db.prepare('SELECT chave, nome, cidade FROM config_pix WHERE id = 1').get() as unknown as DadosPixConfig | undefined;
+    return r ? { chave: r.chave, nome: r.nome, cidade: r.cidade } : null;
+  }
+  salvarPix(d: DadosPixConfig, por: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO config_pix (id, chave, nome, cidade, atualizado_por) VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET chave = excluded.chave, nome = excluded.nome, cidade = excluded.cidade,
+           atualizado_por = excluded.atualizado_por, atualizado_em = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+      )
+      .run(d.chave, d.nome, d.cidade, por);
+  }
+  adminsCadastrados(): string[] {
+    return (this.db.prepare('SELECT email FROM admins ORDER BY email').all() as Array<{ email: string }>).map((a) => a.email);
+  }
+  ehAdminCadastrado(email: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM admins WHERE email = ?').get(normalizarEmail(email));
+  }
+  adicionarAdmin(email: string, por: string): void {
+    this.db.prepare('INSERT INTO admins (email, criado_por) VALUES (?, ?)').run(normalizarEmail(email), por);
+  }
+  removerAdmin(email: string): boolean {
+    return this.db.prepare('DELETE FROM admins WHERE email = ?').run(normalizarEmail(email)).changes > 0;
   }
 
   // Pessoas

@@ -26,9 +26,6 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
     ADMIN_EMAILS: EMAILS_TESTE.admin,
     APP_ORIGINS: ORIGEM,
     GOOGLE_CLIENT_ID: 'cliente',
-    PIX_CHAVE: 'chave@teste.local',
-    PIX_NOME: 'Credor',
-    PIX_CIDADE: 'Sao Paulo',
     ...extra,
   });
   const db = abrirBanco(':memory:');
@@ -42,6 +39,7 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
   };
   const app = criarApp({ db, config, google, agora: () => momento });
   const repo = new Repo(db);
+  repo.salvarPix({ chave: 'chave@teste.local', nome: 'Credor', cidade: 'Sao Paulo' }, EMAILS_TESTE.admin);
   const a = repo.criarPessoa({ nome: 'Ana', sobrenome: 'A', telefone: '1', email: EMAILS_TESTE.devedorA });
   const b = repo.criarPessoa({ nome: 'Bruno', sobrenome: 'B', telefone: '2', email: EMAILS_TESTE.devedorB });
   const base = { nome: 'E', valorTotalCentavos: 300000, dataEmprestimo: '2026-01-01', dataPrevistaPagamento: '2026-06-01', numParcelas: 3, jurosAoMesPct: 0, tipoMulta: 0 as const, multaValor: 0 };
@@ -193,7 +191,7 @@ describe('login', () => {
   });
 
   test('produção exige toda a configuração', () => {
-    const ok = { NODE_ENV: 'production', ADMIN_EMAILS: 'a@b.co', APP_ORIGINS: 'https://app.example', GOOGLE_CLIENT_ID: 'x', PIX_CHAVE: 'c', PIX_NOME: 'N', PIX_CIDADE: 'C' };
+    const ok = { NODE_ENV: 'production', ADMIN_EMAILS: 'a@b.co', APP_ORIGINS: 'https://app.example', GOOGLE_CLIENT_ID: 'x' };
     for (const campo of Object.keys(ok).filter((k) => k !== 'NODE_ENV')) {
       assert.throws(() => lerConfig({ ...ok, [campo]: '' }), campo);
     }
@@ -299,9 +297,70 @@ describe('Pix do devedor', () => {
     assert.ok(r.codigo.includes('chave@teste.local'));
   });
   test('sem Pix configurado responde 503', async () => {
-    const t = montar({ PIX_CHAVE: '' });
+    const t = montar();
+    t.db.exec('DELETE FROM config_pix');
     const ana = await t.login(EMAILS_TESTE.devedorA);
     assert.equal((await t.chamar('GET', `/api/devedor/emprestimos/${t.empA}/pix`, { cookie: ana })).status, 503);
+  });
+});
+
+describe('configurações do admin', () => {
+  const ROTA = '/api/admin/configuracoes';
+  const EXTRA = 'extra@teste.local';
+  const PIX = { chave: '529.982.247-25', nome: 'Novo Credor', cidade: 'Curitiba' };
+  let t: Ctx;
+  let admin: string;
+  beforeEach(async () => {
+    t = montar();
+    admin = await t.login(EMAILS_TESTE.admin);
+  });
+
+  test('salva o Pix normalizado e o devedor passa a pagar nessa chave', async () => {
+    const r = await t.chamar('PUT', `${ROTA}/pix`, { cookie: admin, corpo: PIX });
+    assert.equal(r.status, 200);
+    const ana = await t.login(EMAILS_TESTE.devedorA);
+    const q = (await (await t.chamar('GET', `/api/devedor/emprestimos/${t.empA}/pix`, { cookie: ana })).json()) as { codigo: string; recebedor: string };
+    assert.ok(q.codigo.includes('52998224725'));
+    assert.equal(q.recebedor, 'Novo Credor');
+  });
+
+  test('recusa chave inválida sem alterar a atual', async () => {
+    const r = await t.chamar('PUT', `${ROTA}/pix`, { cookie: admin, corpo: { ...PIX, chave: '12345' } });
+    assert.equal(r.status, 400);
+    assert.equal(t.repo.pixConfig()!.chave, 'chave@teste.local');
+  });
+
+  test('devedor e visitante não acessam', async () => {
+    const ana = await t.login(EMAILS_TESTE.devedorA);
+    assert.equal((await t.chamar('GET', ROTA, { cookie: ana })).status, 403);
+    assert.equal((await t.chamar('PUT', `${ROTA}/pix`, { cookie: ana, corpo: PIX })).status, 403);
+    assert.equal((await t.chamar('GET', ROTA)).status, 401);
+  });
+
+  test('admin adicionado entra, vê as configurações e não altera Pix nem admins', async () => {
+    assert.equal((await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EXTRA.toUpperCase() } })).status, 201);
+    const extra = await t.login(EXTRA);
+    const d = (await (await t.chamar('GET', ROTA, { cookie: extra })).json()) as { podeEditar: boolean };
+    assert.equal(d.podeEditar, false);
+    assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: extra })).status, 200);
+    assert.equal((await t.chamar('PUT', `${ROTA}/pix`, { cookie: extra, corpo: PIX })).status, 403);
+    assert.equal((await t.chamar('POST', `${ROTA}/admins`, { cookie: extra, corpo: { email: 'x@teste.local' } })).status, 403);
+    assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EMAILS_TESTE.admin)}`, { cookie: extra })).status, 403);
+  });
+
+  test('remover admin tira o acesso na hora e o principal não pode ser removido', async () => {
+    await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EXTRA } });
+    const extra = await t.login(EXTRA);
+    assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EXTRA)}`, { cookie: admin })).status, 204);
+    assert.equal((await t.chamar('GET', '/api/admin/resumo', { cookie: extra })).status, 401);
+    assert.equal((await t.chamar('DELETE', `${ROTA}/admins/${encodeURIComponent(EMAILS_TESTE.admin)}`, { cookie: admin })).status, 409);
+  });
+
+  test('um e-mail não pode ser devedor e admin ao mesmo tempo', async () => {
+    assert.equal((await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EMAILS_TESTE.devedorA } })).status, 409);
+    await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EXTRA } });
+    assert.equal((await t.chamar('POST', '/api/admin/pessoas', { cookie: admin, corpo: { nome: 'X', email: EXTRA } })).status, 409);
+    assert.equal((await t.chamar('POST', `${ROTA}/admins`, { cookie: admin, corpo: { email: EXTRA } })).status, 409);
   });
 });
 

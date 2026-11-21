@@ -56,6 +56,22 @@ const MIGRACOES = [
   );
   CREATE INDEX sessoes_usuario ON sessoes (usuario_id);
   `,
+  `
+  CREATE TABLE config_pix (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    chave TEXT NOT NULL,
+    nome TEXT NOT NULL,
+    cidade TEXT NOT NULL,
+    atualizado_por TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  CREATE TABLE admins (
+    email TEXT PRIMARY KEY,
+    criado_por TEXT NOT NULL,
+    criado_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {

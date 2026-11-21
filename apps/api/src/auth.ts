@@ -78,7 +78,7 @@ export interface UsuarioSessao {
 /** O papel nunca é gravado: vem da lista de admins ou do e-mail na ficha da pessoa, a cada requisição. */
 export function resolverPapel(db: DatabaseSync, config: Config, email: string): { papel: Papel; pessoaId: number | null } | null {
   const e = normalizarEmail(email);
-  if (config.adminEmails.has(e)) return { papel: 'admin', pessoaId: null };
+  if (config.adminEmails.has(e) || db.prepare('SELECT 1 FROM admins WHERE email = ?').get(e)) return { papel: 'admin', pessoaId: null };
   const p = db.prepare('SELECT id FROM pessoas WHERE lower(email) = ?').get(e) as { id: number } | undefined;
   return p ? { papel: 'devedor', pessoaId: p.id } : null;
 }

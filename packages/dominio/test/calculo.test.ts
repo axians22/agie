@@ -10,6 +10,7 @@ import {
   gerarBrCode,
   gerarParcelas,
   hojeBrasil,
+  normalizarChavePix,
   parseMoeda,
   percentual,
   valorParaPagarAgora,
@@ -101,6 +102,19 @@ describe('formatos', () => {
 });
 
 describe('Pix', () => {
+  test('normaliza os tipos de chave aceitos', () => {
+    assert.equal(normalizarChavePix('529.982.247-25'), '52998224725');
+    assert.equal(normalizarChavePix('11.222.333/0001-81'), '11222333000181');
+    assert.equal(normalizarChavePix('12.ABC.345/01DE-35'), '12ABC34501DE35');
+    assert.equal(normalizarChavePix(' Pessoa@Exemplo.COM '), 'pessoa@exemplo.com');
+    assert.equal(normalizarChavePix('+55 (11) 91234-5678'), '+5511912345678');
+    assert.equal(normalizarChavePix('123E4567-E12B-12D1-A456-426655440000'), '123e4567-e12b-12d1-a456-426655440000');
+  });
+  test('recusa chave inválida', () => {
+    for (const v of ['', 'abc', '52998224724', '11111111111', '11222333000180', '11912345678', '+5511123']) {
+      assert.equal(normalizarChavePix(v), null, v);
+    }
+  });
   test('reproduz o exemplo do manual do BR Code', () => {
     const c = gerarBrCode({ chave: '123e4567-e12b-12d1-a456-426655440000', nome: 'Fulano de Tal', cidade: 'BRASILIA' });
     assert.equal(c, '00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-4266554400005204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***63041D3D');

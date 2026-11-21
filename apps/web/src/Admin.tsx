@@ -501,10 +501,127 @@ function EmprestimoCampos({ id, pessoas, inicial }: { id?: string; pessoas: Pess
   );
 }
 
+type PixDto = { chave: string; nome: string; cidade: string };
+type ConfiguracoesDto = { pix: PixDto | null; admins: Array<{ email: string; principal: boolean }>; podeEditar: boolean };
+
+function ConfigPix({ pix, podeEditar, aoSalvar }: { pix: PixDto | null; podeEditar: boolean; aoSalvar: () => void }) {
+  const avisar = useAviso();
+  const [f, setF] = useState<PixDto>(pix ?? { chave: '', nome: '', cidade: '' });
+  const [erro, setErro] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState(false);
+  const campo = (k: keyof PixDto) => ({ value: f[k], onChange: (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value }) });
+
+  const salvar = async (e: FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    setSalvando(true);
+    try {
+      await api('PUT', '/admin/configuracoes/pix', f);
+      avisar('Dados do Pix salvos.');
+      aoSalvar();
+    } catch (x) {
+      setErro(mensagemErro(x));
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  if (!podeEditar) {
+    return pix ? (
+      <dl className="dados">
+        <div><dt>Chave</dt><dd className="quebra">{pix.chave}</dd></div>
+        <div><dt>Recebedor</dt><dd>{pix.nome}</dd></div>
+        <div><dt>Cidade</dt><dd>{pix.cidade}</dd></div>
+      </dl>
+    ) : <p className="suave peq">O administrador principal ainda não configurou o Pix.</p>;
+  }
+  return (
+    <form className="form" onSubmit={salvar}>
+      {!pix && <p className="erro" role="status">Enquanto o Pix não for salvo, os devedores não conseguem gerar o QR Code.</p>}
+      <label>Chave Pix<input required maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck={false} {...campo('chave')} />
+        <small>CPF, CNPJ, e-mail, telefone com +55 ou chave aleatória.</small></label>
+      <label>Nome do recebedor<input required maxLength={25} {...campo('nome')} /></label>
+      <label>Cidade<input required maxLength={15} {...campo('cidade')} /></label>
+      <small>Depois de salvar, gere um QR e confira o nome e a chave no app do banco antes de pagar.</small>
+      {erro && <p className="erro" role="alert">{erro}</p>}
+      <button className="btn" disabled={salvando}>{salvando ? 'Salvando...' : 'Salvar Pix'}</button>
+    </form>
+  );
+}
+
+function ConfigAdmins({ admins, podeEditar, aoMudar }: { admins: ConfiguracoesDto['admins']; podeEditar: boolean; aoMudar: () => void }) {
+  const avisar = useAviso();
+  const [email, setEmail] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [removendo, setRemovendo] = useState<string | null>(null);
+
+  const adicionar = async (e: FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    setOcupado(true);
+    try {
+      await api('POST', '/admin/configuracoes/admins', { email });
+      setEmail('');
+      avisar('Administrador adicionado.');
+      aoMudar();
+    } catch (x) {
+      setErro(mensagemErro(x));
+    } finally {
+      setOcupado(false);
+    }
+  };
+  const remover = async () => {
+    if (!removendo) return;
+    setErro(null);
+    try {
+      await api('DELETE', `/admin/configuracoes/admins/${encodeURIComponent(removendo)}`);
+      avisar('Administrador removido.');
+      aoMudar();
+    } catch (x) {
+      setErro(mensagemErro(x));
+    } finally {
+      setRemovendo(null);
+    }
+  };
+
+  return (
+    <>
+      <ul className="lista lista-admins">
+        {admins.map((a) => (
+          <li key={a.email} className="linha">
+            <div className="min0">
+              <span className="quebra bloco">{a.email}</span>
+              <span className="suave peq">{a.principal ? 'Principal' : 'Administrador'}</span>
+            </div>
+            {podeEditar && !a.principal && <button className="link-txt" aria-label={`Remover ${a.email}`} onClick={() => setRemovendo(a.email)}>Remover</button>}
+          </li>
+        ))}
+      </ul>
+      {podeEditar && (
+        <form className="form" onSubmit={adicionar}>
+          <label>Adicionar e-mail Google<input required type="email" inputMode="email" maxLength={254} autoCapitalize="none" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <small>Essa pessoa verá todos os empréstimos, mas não poderá alterar o Pix nem os administradores.</small></label>
+          <button className="btn sec" disabled={ocupado}>{ocupado ? 'Adicionando...' : 'Adicionar administrador'}</button>
+        </form>
+      )}
+      {erro && <p className="erro" role="alert">{erro}</p>}
+      {removendo && (
+        <Modal titulo="Remover administrador?" aoFechar={() => setRemovendo(null)}>
+          <p className="quebra">{removendo} perderá o acesso de administrador na hora.</p>
+          <button className="btn perigo" onClick={remover}>Remover</button>
+          <button className="btn sec" onClick={() => setRemovendo(null)}>Cancelar</button>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
   const avisar = useAviso();
   const arquivo = useRef<HTMLInputElement>(null);
   const [erro, setErro] = useState<string | null>(null);
+  const conf = useDados<ConfiguracoesDto>('/admin/configuracoes');
 
   const importar = async (file: File | undefined) => {
     if (!file) return;
@@ -525,6 +642,20 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
         <h2>Conta</h2>
         <dl className="dados"><div><dt>E-mail</dt><dd className="quebra">{usuario.email}</dd></div><div><dt>Perfil</dt><dd>Administrador</dd></div></dl>
       </section>
+      {conf.erro && !conf.dados && <Falha mensagem={conf.erro} tentar={conf.recarregar} />}
+      {!conf.erro && !conf.dados && <Carregando />}
+      {conf.dados && (
+        <>
+          <section className="cartao">
+            <h2>Pix para receber</h2>
+            <ConfigPix key={JSON.stringify(conf.dados.pix)} pix={conf.dados.pix} podeEditar={conf.dados.podeEditar} aoSalvar={conf.recarregar} />
+          </section>
+          <section className="cartao">
+            <h2>Administradores</h2>
+            <ConfigAdmins admins={conf.dados.admins} podeEditar={conf.dados.podeEditar} aoMudar={conf.recarregar} />
+          </section>
+        </>
+      )}
       <section className="cartao"><h2>Instalar no celular</h2><InstalarApp /></section>
       <section className="cartao">
         <h2>Backup</h2>

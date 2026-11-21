@@ -22,6 +22,39 @@ function semAcento(texto: string): string {
     .trim();
 }
 
+function digitoVerificador(base: string, pesos: number[]): number {
+  const soma = [...base].reduce((t, c, i) => t + (c.charCodeAt(0) - 48) * pesos[i]!, 0);
+  const resto = soma % 11;
+  return resto < 2 ? 0 : 11 - resto;
+}
+
+function cpfValido(v: string): boolean {
+  if (!/^\d{11}$/.test(v) || /^(\d)\1{10}$/.test(v)) return false;
+  const d1 = digitoVerificador(v.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]);
+  const d2 = digitoVerificador(v.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]);
+  return v.endsWith(`${d1}${d2}`);
+}
+
+/** Aceita o CNPJ numérico e o alfanumérico. */
+function cnpjValido(v: string): boolean {
+  if (!/^[0-9A-Z]{12}\d{2}$/.test(v) || /^(\d)\1{13}$/.test(v)) return false;
+  const pesos = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const d1 = digitoVerificador(v.slice(0, 12), pesos);
+  const d2 = digitoVerificador(v.slice(0, 13), [6, ...pesos]);
+  return v.endsWith(`${d1}${d2}`);
+}
+
+/** Devolve a chave no formato usado pelo Pix, ou null se ela não for CPF, CNPJ, e-mail, telefone ou aleatória. */
+export function normalizarChavePix(valor: string): string | null {
+  const v = valor.trim();
+  if (v.length <= 77 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return v.toLowerCase();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) return v.toLowerCase();
+  const telefone = v.replace(/[\s().-]/g, '');
+  if (/^\+55[1-9]\d\d{8,9}$/.test(telefone)) return telefone;
+  const documento = v.replace(/[.\-/\s]/g, '').toUpperCase();
+  return cpfValido(documento) || cnpjValido(documento) ? documento : null;
+}
+
 export function crc16(texto: string): string {
   let crc = 0xffff;
   for (let i = 0; i < texto.length; i++) {

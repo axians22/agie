@@ -1,9 +1,3 @@
-export interface PixConfig {
-  chave: string;
-  nome: string;
-  cidade: string;
-}
-
 export interface Config {
   producao: boolean;
   porta: number;
@@ -14,7 +8,6 @@ export interface Config {
   adminEmails: Set<string>;
   origens: Set<string>;
   cookieSeguro: boolean;
-  pix: PixConfig | null;
 }
 
 export function normalizarEmail(email: string): string {
@@ -36,12 +29,6 @@ export function lerConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!env.GOOGLE_CLIENT_ID) throw new Error('Defina GOOGLE_CLIENT_ID.');
   }
 
-  const pix =
-    env.PIX_CHAVE && env.PIX_NOME && env.PIX_CIDADE
-      ? { chave: env.PIX_CHAVE, nome: env.PIX_NOME, cidade: env.PIX_CIDADE }
-      : null;
-  if (producao && !pix) throw new Error('Defina PIX_CHAVE, PIX_NOME e PIX_CIDADE.');
-
   return {
     producao,
     porta: Number(env.PORT ?? 3000),
@@ -52,6 +39,5 @@ export function lerConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminEmails,
     origens,
     cookieSeguro: producao || env.COOKIE_SECURE === 'true',
-    pix,
   };
 }

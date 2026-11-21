@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { dataValida, gerarBrCode, hojeBrasil } from '@emprestimos/dominio';
+import { dataValida, gerarBrCode, hojeBrasil, normalizarChavePix } from '@emprestimos/dominio';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -63,6 +63,13 @@ const esquemaPagamento = z.strictObject({
   valorCentavos: z.number().int().positive().max(1_000_000_000_00),
   observacao: textoOpc(500),
 });
+
+const esquemaPix = z.strictObject({
+  chave: z.string().trim().min(1).max(100),
+  nome: z.string().trim().min(1).max(25),
+  cidade: z.string().trim().min(1).max(15),
+});
+const esquemaAdmin = z.strictObject({ email: z.string().trim().pipe(z.email().max(254)) });
 
 const dataBackup = z.string().refine((v) => dataValida(v.slice(0, 10)), 'data inválida');
 const esquemaBackup = z.object({
@@ -297,7 +304,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     return c.body(null, 204);
   });
 
-  app.get('/api/auth/me', (c) => c.json({ usuario: dtoUsuario(c.get('usuario')), pixDisponivel: !!config.pix }));
+  app.get('/api/auth/me', (c) => c.json({ usuario: dtoUsuario(c.get('usuario')), pixDisponivel: !!repo.pixConfig() }));
 
   // ---------- Devedor: sempre filtrado pela pessoa da sessão ----------
   const doDevedor = (c: Context<Ambiente>) => c.get('usuario').pessoaId!;
@@ -313,14 +320,15 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   app.get('/api/devedor/emprestimos/:id', (c) => c.json({ emprestimo: dtoDevedor(emprestimoDoDevedor(c)), hoje: hoje() }));
   app.get('/api/devedor/emprestimos/:id/pix', (c) => {
     const v = emprestimoDoDevedor(c);
-    if (!config.pix) throw new ErroHttp(503, 'PIX_NAO_CONFIGURADO', 'Pix ainda não configurado.');
+    const pix = repo.pixConfig();
+    if (!pix) throw new ErroHttp(503, 'PIX_NAO_CONFIGURADO', 'Pix ainda não configurado.');
     if (v.valorPagarAgora <= 0) throw new ErroHttp(409, 'NADA_A_PAGAR', 'Não há valor em aberto.');
     const txid = `EMP${v.emprestimo.id}D${hoje().replaceAll('-', '')}`;
     return c.json({
-      codigo: gerarBrCode({ ...config.pix, valorCentavos: v.valorPagarAgora, txid }),
+      codigo: gerarBrCode({ ...pix, valorCentavos: v.valorPagarAgora, txid }),
       valorCentavos: v.valorPagarAgora,
       txid,
-      recebedor: config.pix.nome,
+      recebedor: pix.nome,
     });
   });
 
@@ -346,7 +354,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
 
   const garantirEmailLivre = (email: string | null, ignorar?: number) => {
     if (email && repo.emailEmUso(email, ignorar)) throw new ErroHttp(409, 'EMAIL_EM_USO', 'Este e-mail já está em outra pessoa.');
-    if (email && config.adminEmails.has(normalizarEmail(email))) throw new ErroHttp(409, 'EMAIL_ADMIN', 'Este e-mail é de um administrador.');
+    if (email && (config.adminEmails.has(normalizarEmail(email)) || repo.ehAdminCadastrado(email))) throw new ErroHttp(409, 'EMAIL_ADMIN', 'Este e-mail é de um administrador.');
   };
 
   app.post('/api/admin/pessoas', async (c) => {
@@ -413,6 +421,56 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
   });
   app.delete('/api/admin/pagamentos/:id', (c) => {
     if (!repo.removerPagamento(idParam(c))) throw naoEncontrado();
+    return c.body(null, 204);
+  });
+
+  // ---------- Configurações: Pix e administradores só mudam pelo admin principal ----------
+  const ehPrincipal = (c: Context<Ambiente>) => config.adminEmails.has(normalizarEmail(c.get('usuario').email));
+  const exigirPrincipal = (c: Context<Ambiente>) => {
+    if (!ehPrincipal(c)) throw new ErroHttp(403, 'SO_PRINCIPAL', 'Só o administrador principal pode alterar isso.');
+  };
+
+  app.get('/api/admin/configuracoes', (c) =>
+    c.json({
+      pix: repo.pixConfig(),
+      admins: [
+        ...[...config.adminEmails].sort().map((email) => ({ email, principal: true })),
+        ...repo.adminsCadastrados().filter((email) => !config.adminEmails.has(email)).map((email) => ({ email, principal: false })),
+      ],
+      podeEditar: ehPrincipal(c),
+    }),
+  );
+
+  app.put('/api/admin/configuracoes/pix', async (c) => {
+    exigirPrincipal(c);
+    const d = await corpo(c, esquemaPix);
+    const chave = normalizarChavePix(d.chave);
+    if (!chave) {
+      throw new ErroHttp(400, 'CHAVE_INVALIDA', 'Chave Pix inválida. Use CPF, CNPJ, e-mail, telefone com +55 ou chave aleatória.');
+    }
+    const pix = { chave, nome: d.nome, cidade: d.cidade };
+    try {
+      gerarBrCode(pix);
+    } catch {
+      throw new ErroHttp(400, 'PIX_INVALIDO', 'Nome e cidade precisam ter letras ou números.');
+    }
+    repo.salvarPix(pix, c.get('usuario').email);
+    return c.json({ pix });
+  });
+
+  app.post('/api/admin/configuracoes/admins', async (c) => {
+    exigirPrincipal(c);
+    const email = normalizarEmail((await corpo(c, esquemaAdmin)).email);
+    garantirEmailLivre(email);
+    repo.adicionarAdmin(email, c.get('usuario').email);
+    return c.json({ email }, 201);
+  });
+
+  app.delete('/api/admin/configuracoes/admins/:email', (c) => {
+    exigirPrincipal(c);
+    const email = normalizarEmail(c.req.param('email'));
+    if (config.adminEmails.has(email)) throw new ErroHttp(409, 'ADMIN_PRINCIPAL', 'O administrador principal não pode ser removido.');
+    if (!repo.removerAdmin(email)) throw naoEncontrado();
     return c.body(null, 204);
   });
 
