@@ -1,5 +1,5 @@
 // Guarda só a interface. Dados da API nunca entram no cache do aparelho.
-const CACHE = 'emprestimos-v2';
+const CACHE = 'emprestimos-v3';
 
 self.addEventListener('install', () => self.skipWaiting());
 

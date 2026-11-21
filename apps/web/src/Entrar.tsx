@@ -74,7 +74,7 @@ export function Entrar({ aoEntrar }: { aoEntrar: (u: Usuario) => void }) {
         });
         const largura = Math.max(200, Math.min(320, Math.floor(botao.current.clientWidth)));
         window.google.accounts.id.renderButton(botao.current, {
-          type: 'standard', theme: 'filled_black', size: 'large', text: 'signin_with', shape: 'pill', logo_alignment: 'left', width: largura, locale: 'pt-BR',
+          type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill', logo_alignment: 'left', width: largura, locale: 'pt-BR',
         });
       })
       .catch(() => ativo && setErro('Não foi possível carregar o login do Google. Verifique sua conexão.'));
