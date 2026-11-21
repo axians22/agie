@@ -66,7 +66,7 @@ function Pessoas() {
   const [busca, setBusca] = useState('');
   const lista = (dados?.pessoas ?? []).filter((p) => normal(`${p.nome} ${p.sobrenome} ${p.telefone} ${p.email ?? ''}`).includes(normal(busca)));
   return (
-    <Tela titulo="Pessoas" acao={<Link to="/pessoas/nova" className="btn-icone laranja" aria-label="Nova pessoa"><Icone nome="mais" /></Link>}>
+    <Tela titulo="Pessoas" acao={<Link to="/pessoas/nova" className="btn-icone marca" aria-label="Nova pessoa"><Icone nome="mais" /></Link>}>
       <input className="busca" type="search" placeholder="Buscar pessoa" aria-label="Buscar pessoa" value={busca} onChange={(e) => setBusca(e.target.value)} />
       {erro && !dados && <Falha mensagem={erro} tentar={recarregar} />}
       {!erro && !dados && <Carregando />}
@@ -208,7 +208,7 @@ function Emprestimos() {
   });
   const FILTROS = [['todos', 'Todos'], ['atraso', 'Atrasados'], ['dia', 'Em dia'], ['quitados', 'Quitados']] as const;
   return (
-    <Tela titulo="Empréstimos" acao={<Link to="/emprestimos/novo" className="btn-icone laranja" aria-label="Novo empréstimo"><Icone nome="mais" /></Link>}>
+    <Tela titulo="Empréstimos" acao={<Link to="/emprestimos/novo" className="btn-icone marca" aria-label="Novo empréstimo"><Icone nome="mais" /></Link>}>
       <input className="busca" type="search" placeholder="Buscar por nome ou pessoa" aria-label="Buscar empréstimo" value={busca} onChange={(e) => setBusca(e.target.value)} />
       <div className="chips" role="group" aria-label="Filtrar">
         {FILTROS.map(([v, r]) => <button key={v} className={filtro === v ? 'chip ativo' : 'chip'} aria-pressed={filtro === v} onClick={() => setFiltro(v)}>{r}</button>)}

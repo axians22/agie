@@ -55,7 +55,7 @@ export function Navegacao({ papel, atrasados, pedidos }: { papel: Papel; atrasad
         ];
   return (
     <nav className="nav" aria-label="Navegação principal">
-      <div className="nav-marca">Empréstimos</div>
+      <div className="nav-marca"><img src="/icons/icone.svg" alt="" width="30" height="30" />Empréstimos</div>
       {itens.map(([para, rotulo, icone, extra]) => (
         <NavLink key={para} to={para!} end={para === '/'} className={`nav-item ${extra ?? ''}`}>
           <span className="nav-icone">
