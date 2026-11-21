@@ -3,7 +3,7 @@ import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, parsePercentual, 
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
 import { api, mensagemErro, useDados, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
-  CampoInteiro, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
+  CampoInteiro, ConvitePush, Notificacoes, useSincronizarPush, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
 } from './comum.tsx';
 
@@ -31,6 +31,7 @@ function Inicio() {
       {!r.erro && !res && <Carregando />}
       {res && (
         <>
+          <ConvitePush />
           {!!r.dados?.pedidosPendentes && (
             <Link to="/pedidos" className="alerta">
               <strong>{r.dados.pedidosPendentes === 1 ? '1 pedido aguardando' : `${r.dados.pedidosPendentes} pedidos aguardando`}</strong>
@@ -879,6 +880,7 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
           </section>
         </>
       )}
+      <Notificacoes />
       <section className="cartao"><h2>Instalar no celular</h2><InstalarApp /></section>
       <section className="cartao">
         <h2>Backup</h2>
@@ -898,6 +900,7 @@ export function AppAdmin({ usuario, aoSair }: { usuario: Usuario; aoSair: () => 
   const { dados, recarregar } = useDados<{ resumo: Resumo; pedidosPendentes: number }>('/admin/resumo');
   const { pathname } = useLocation();
   useAtualizacao(recarregar);
+  useSincronizarPush();
   useEffect(() => recarregar(), [pathname, recarregar]);
   return (
     <div className="app">

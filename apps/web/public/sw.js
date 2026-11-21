@@ -1,5 +1,5 @@
 // Guarda só a interface. Dados da API nunca entram no cache do aparelho.
-const CACHE = 'emprestimos-v3';
+const CACHE = 'emprestimos-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -48,4 +48,41 @@ self.addEventListener('fetch', (e) => {
       ),
     );
   }
+});
+
+self.addEventListener('push', (e) => {
+  let d = {};
+  try {
+    d = e.data?.json() ?? {};
+  } catch {
+    d = {};
+  }
+  e.waitUntil(
+    self.registration.showNotification(d.titulo || 'Empréstimos', {
+      body: d.corpo || 'Abra o app para ver as novidades.',
+      icon: '/icons/icone-192.png',
+      badge: '/icons/badge-96.png',
+      tag: d.tag || undefined,
+      data: { url: d.url || '/' },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  let destino = new URL('/', self.location.origin);
+  try {
+    const u = new URL(e.notification.data?.url || '/', self.location.origin);
+    if (u.origin === self.location.origin) destino = u;
+  } catch {
+    // Mantém a tela inicial.
+  }
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (janelas) => {
+      const janela = janelas.find((j) => new URL(j.url).origin === self.location.origin);
+      if (!janela) return self.clients.openWindow(destino.href);
+      await janela.focus();
+      return janela.navigate(destino.href).catch(() => self.clients.openWindow(destino.href));
+    }),
+  );
 });

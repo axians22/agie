@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { api, ErroApi, EVENTO_SESSAO_EXPIRADA, mensagemErro, type Usuario } from './api.ts';
 import { Carregando, Falha, ProvedorAviso } from './comum.tsx';
 import { Entrar } from './Entrar.tsx';
+import { desativarPush } from './push.ts';
 import './estilos.css';
 
 // Cada perfil baixa só o próprio código: o devedor não recebe as telas de admin.
@@ -37,6 +38,8 @@ function App() {
   }, []);
 
   const sair = async () => {
+    // Sem isto, o próximo a entrar neste aparelho receberia avisos da conta anterior.
+    await desativarPush().catch(() => {});
     await api('POST', '/auth/logout').catch(() => {});
     setSessao(null);
   };

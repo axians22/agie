@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
 import { api, mensagemErro, useDados, type EmprestimoDto, type PedidoDto, type Resumo, type Usuario } from './api.ts';
 import {
-  CampoInteiro, CampoMoeda, CartaoEmprestimo, Carregando, dataBr, Falha, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
+  CampoInteiro, ConvitePush, Notificacoes, useSincronizarPush, CampoMoeda, CartaoEmprestimo, Carregando, dataBr, Falha, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
 } from './comum.tsx';
 
@@ -26,6 +26,7 @@ function Inicio({ usuario }: { usuario: Usuario }) {
       {!erro && (!dados || !r) && <Carregando />}
       {dados && r && (
         <>
+          <ConvitePush />
           <section className="destaque">
             <div className="rotulo">Você deve no total</div>
             <div className="valor-grande">{moeda(r.totalAReceber)}</div>
@@ -350,6 +351,7 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
         </dl>
         <p className="suave peq">Algum dado errado? Fale com o credor.</p>
       </section>
+      <Notificacoes />
       <section className="cartao"><h2>Instalar no celular</h2><InstalarApp /></section>
       <button className="btn sec" onClick={aoSair}>Sair</button>
     </Tela>
@@ -358,6 +360,7 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
 
 export function AppDevedor({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
   const { dados } = useDados<{ resumo: Resumo }>('/devedor/resumo');
+  useSincronizarPush();
   return (
     <div className="app">
       <Navegacao papel="devedor" atrasados={dados?.resumo.emprestimosAtrasados} />

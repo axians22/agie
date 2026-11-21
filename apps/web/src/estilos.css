@@ -237,3 +237,4 @@ button.link-txt { flex: none; min-height: 44px; padding: 0 4px; background: none
   .grade2 .cartao { padding: 12px 10px; }
   .grade2 .valor { font-size: .82rem; }
 }
+.bloco-acoes { display: flex; flex-direction: column; gap: 10px; }

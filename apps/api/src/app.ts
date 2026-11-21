@@ -15,6 +15,7 @@ import {
   type VerificadorGoogle,
 } from './auth.ts';
 import { normalizarEmail, type Config } from './config.ts';
+import { chavesInscricaoValidas, endpointPermitido, ServicoPush } from './push.ts';
 import { ErroImportacao, Repo, type EmprestimoVisao, type Pedido } from './repo.ts';
 
 type Ambiente = { Variables: { usuario: UsuarioSessao } };
@@ -23,6 +24,7 @@ export interface Dependencias {
   db: DatabaseSync;
   config: Config;
   google: VerificadorGoogle;
+  push?: ServicoPush;
   agora?: () => Date;
 }
 
@@ -86,6 +88,12 @@ const esquemaAprovacao = z
   .refine((e) => e.primeiroVencimento >= e.dataEmprestimo, { path: ['primeiroVencimento'], message: 'vencimento antes do empréstimo' });
 
 const esquemaRecusa = z.strictObject({ motivo: textoOpc(300) });
+
+const esquemaInscricaoPush = z.strictObject({
+  endpoint: z.string().min(10).max(1000),
+  keys: z.strictObject({ p256dh: z.string().min(80).max(120), auth: z.string().min(16).max(32) }),
+});
+const esquemaEndpointPush = z.strictObject({ endpoint: z.string().min(10).max(1000) });
 
 const esquemaPix = z.strictObject({
   chave: z.string().trim().min(1).max(100),
@@ -212,8 +220,9 @@ function dtoPedido(p: Pedido) {
   };
 }
 
-export function criarApp({ db, config, google, agora = () => new Date() }: Dependencias) {
+export function criarApp({ db, config, google, push = new ServicoPush(db, config), agora = () => new Date() }: Dependencias) {
   const repo = new Repo(db);
+  const ultimoTestePush = new Map<number, number>();
   repo.sincronizarPessoasGoogle(config.adminEmails);
   const app = new Hono<Ambiente>();
   const hoje = () => hojeBrasil(agora());
@@ -345,6 +354,31 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
 
   app.get('/api/auth/me', (c) => c.json({ usuario: dtoUsuario(c.get('usuario')), pixDisponivel: !!repo.pixConfig() }));
 
+  // ---------- Notificações: cada conta só mexe nas próprias inscrições ----------
+  app.get('/api/push/config', (c) => c.json({ disponivel: push.disponivel, chavePublica: push.chavePublica }));
+  app.post('/api/push/inscricao', async (c) => {
+    if (!push.disponivel) throw new ErroHttp(503, 'PUSH_INDISPONIVEL', 'Notificações indisponíveis.');
+    const d = await corpo(c, esquemaInscricaoPush);
+    if (!endpointPermitido(d.endpoint) || !chavesInscricaoValidas(d.keys.p256dh, d.keys.auth)) {
+      throw new ErroHttp(400, 'INSCRICAO_INVALIDA', 'Inscrição de notificação inválida.');
+    }
+    push.salvarInscricao(c.get('usuario').id, { endpoint: d.endpoint, p256dh: d.keys.p256dh, auth: d.keys.auth });
+    return c.json({ ok: true });
+  });
+  app.delete('/api/push/inscricao', async (c) => {
+    const { endpoint } = await corpo(c, esquemaEndpointPush);
+    push.removerInscricao(c.get('usuario').id, endpoint);
+    return c.body(null, 204);
+  });
+  app.post('/api/push/teste', async (c) => {
+    const id = c.get('usuario').id;
+    const momento = agora().getTime();
+    if (momento - (ultimoTestePush.get(id) ?? 0) < 30_000) throw new ErroHttp(409, 'AGUARDE', 'Aguarde alguns segundos para testar de novo.');
+    ultimoTestePush.set(id, momento);
+    if ((await push.teste(id)) === 0) throw new ErroHttp(503, 'PUSH_FALHOU', 'Não foi possível enviar. Desative e ative de novo.');
+    return c.json({ ok: true });
+  });
+
   // ---------- Devedor: sempre filtrado pela pessoa da sessão ----------
   // Sem ficha, usa um id que não existe: as consultas voltam vazias. Nunca passe undefined, que significa "todos".
   const doDevedor = (c: Context<Ambiente>) => c.get('usuario').pessoaId ?? 0;
@@ -380,6 +414,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     if (d.primeiroVencimento < hoje()) throw new ErroHttp(400, 'VENCIMENTO_PASSADO', 'O primeiro vencimento não pode estar no passado.');
     const id = repo.criarPedido(pessoaId, d);
     if (id === null) throw new ErroHttp(409, 'PEDIDO_ABERTO', 'Você já tem um pedido aguardando resposta.');
+    push.paraAdmins({ titulo: 'Novo pedido de empréstimo', corpo: 'Abra o app para analisar.', url: `/pedidos/${id}`, tag: `pedido-${id}` });
     return c.json({ id }, 201);
   });
   app.post('/api/devedor/pedidos/:id/cancelar', (c) => {
@@ -460,15 +495,23 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     return c.body(null, 204);
   });
 
+  const avisarPagamento = (pessoaId: number, emprestimoId: number) =>
+    push.paraPessoa(pessoaId, { titulo: 'Pagamento confirmado', corpo: 'Abra o app para ver o saldo.', url: `/emprestimos/${emprestimoId}`, tag: `pagamento-${emprestimoId}` });
+
   app.post('/api/admin/emprestimos/:id/pagamentos', async (c) => {
     const id = idParam(c);
     const d = await corpo(c, esquemaPagamento);
-    if (!repo.emprestimo(id)) throw naoEncontrado();
-    return c.json({ id: repo.registrarPagamento(id, d) }, 201);
+    const e = repo.emprestimo(id);
+    if (!e) throw naoEncontrado();
+    const pagamentoId = repo.registrarPagamento(id, d);
+    avisarPagamento(e.pessoaId, id);
+    return c.json({ id: pagamentoId }, 201);
   });
   app.post('/api/admin/emprestimos/:id/parcelas/:numero/alternar', (c) => {
-    const r = repo.alternarParcela(idParam(c), idParam(c, 'numero'), hoje());
+    const id = idParam(c);
+    const r = repo.alternarParcela(id, idParam(c, 'numero'), hoje());
     if (!r) throw naoEncontrado();
+    if (r === 'marcada') avisarPagamento(repo.emprestimo(id)!.pessoaId, id);
     return c.json({ resultado: r });
   });
   app.put('/api/admin/pagamentos/:id', async (c) => {
@@ -521,13 +564,15 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     const dataPrevistaPagamento = adicionaMeses(d.primeiroVencimento, d.numParcelas - 1);
     const emprestimoId = repo.aprovarPedido(id, { ...d, dataPrevistaPagamento }, c.get('usuario').email, agora());
     if (emprestimoId === null) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    push.paraPessoa(p.pessoaId, { titulo: 'Pedido aprovado', corpo: 'Abra o app para ver as parcelas.', url: `/emprestimos/${emprestimoId}`, tag: `pedido-${id}` });
     return c.json({ emprestimoId }, 201);
   });
   app.post('/api/admin/pedidos/:id/recusar', async (c) => {
     const id = idParam(c);
-    pedidoPendente(id);
+    const p = pedidoPendente(id);
     const { motivo } = await corpo(c, esquemaRecusa);
     if (!repo.recusarPedido(id, motivo, c.get('usuario').email, agora())) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    push.paraPessoa(p.pessoaId, { titulo: 'Pedido recusado', corpo: 'Abra o app para ver a resposta.', url: '/pedidos', tag: `pedido-${id}` });
     return c.json({ ok: true });
   });
 

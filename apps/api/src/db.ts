@@ -95,6 +95,28 @@ const MIGRACOES = [
   CREATE INDEX pedidos_status ON pedidos (status, id);
   CREATE UNIQUE INDEX pedidos_um_pendente ON pedidos (pessoa_id) WHERE status = 'pendente';
   `,
+  `
+  CREATE TABLE config_push (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    chave_publica TEXT NOT NULL,
+    chave_privada TEXT NOT NULL
+  );
+
+  CREATE TABLE push_inscricoes (
+    endpoint TEXT PRIMARY KEY,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    criada_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX push_inscricoes_usuario ON push_inscricoes (usuario_id);
+
+  CREATE TABLE push_lembretes (
+    chave TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+  );
+  CREATE INDEX push_lembretes_data ON push_lembretes (data);
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {

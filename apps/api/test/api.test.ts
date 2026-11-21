@@ -9,6 +9,7 @@ import { ErroGoogle, hashToken } from '../src/auth.ts';
 import { fazerBackup } from '../src/backup.ts';
 import { lerConfig } from '../src/config.ts';
 import { abrirBanco } from '../src/db.ts';
+import { endpointPermitido, ServicoPush, type InscricaoPush, type MensagemPush, type ResultadoPush } from '../src/push.ts';
 import { Repo } from '../src/repo.ts';
 
 const EMAILS_TESTE = {
@@ -40,7 +41,19 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
       return { email: email.toLowerCase(), nome: extra?.nome ?? 'Via Google', avatarUrl: extra?.avatarUrl ?? null };
     },
   };
-  const app = criarApp({ db, config, google, agora: () => momento });
+  const enviados: Array<{ endpoint: string; mensagem: MensagemPush }> = [];
+  const respostasPush = new Map<string, ResultadoPush>();
+  const push = new ServicoPush(db, config, {
+    chavePublica: 'chave-publica',
+    enviador: {
+      async enviar(i: InscricaoPush, mensagem: MensagemPush) {
+        const r = respostasPush.get(i.endpoint) ?? 'ok';
+        if (r === 'ok') enviados.push({ endpoint: i.endpoint, mensagem });
+        return r;
+      },
+    },
+  });
+  const app = criarApp({ db, config, google, push, agora: () => momento });
   const repo = new Repo(db);
   repo.salvarPix({ chave: 'chave@teste.local', nome: 'Credor', cidade: 'Sao Paulo' }, EMAILS_TESTE.admin);
   const a = repo.criarPessoa({ nome: 'Ana', sobrenome: 'A', telefone: '1', email: EMAILS_TESTE.devedorA });
@@ -63,7 +76,7 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
     assert.equal(r.status, 200);
     return r.headers.get('set-cookie')!.split(';')[0]!;
   }
-  return { app, db, repo, identidades, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
+  return { app, db, repo, identidades, push, enviados, respostasPush, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
 }
 
 type Ctx = ReturnType<typeof montar>;
@@ -559,6 +572,153 @@ describe('pedidos de empréstimo', () => {
     const backup = { formato: 1, pessoas: [], emprestimos: [], pagamentos: [] };
     assert.equal((await t.chamar('POST', '/api/admin/importar', { cookie: admin, corpo: backup })).status, 409);
     assert.equal(t.repo.todosPedidos().length, 1);
+  });
+});
+
+describe('notificações', () => {
+  const P256 = Buffer.alloc(65, 4).toString('base64url');
+  const AUTH = Buffer.alloc(16, 7).toString('base64url');
+  const inscricao = (n: string) => ({ endpoint: `https://fcm.googleapis.com/fcm/send/${n}`, keys: { p256dh: P256, auth: AUTH } });
+  const PEDIDO = { valorCentavos: 120000, numParcelas: 3, primeiroVencimento: '2026-07-15', finalidade: 'Reforma secreta' };
+  const APROVACAO = { nome: 'Reforma', valorTotalCentavos: 120000, dataEmprestimo: '2026-06-15', primeiroVencimento: '2026-07-15', numParcelas: 3 };
+  const NOVE_E_MEIA = (data: string) => new Date(`${data}T12:30:00Z`);
+  let t: Ctx;
+  let admin: string;
+  let ana: string;
+  let bruno: string;
+  const inscrever = (cookie: string, n: string) => t.chamar('POST', '/api/push/inscricao', { cookie, corpo: inscricao(n) });
+  const titulos = () => t.enviados.map((e) => e.mensagem.titulo);
+  beforeEach(async () => {
+    t = montar();
+    admin = await t.login(EMAILS_TESTE.admin);
+    ana = await t.login(EMAILS_TESTE.devedorA);
+    bruno = await t.login(EMAILS_TESTE.devedorB);
+    assert.equal((await inscrever(admin, 'admin')).status, 200);
+    assert.equal((await inscrever(ana, 'ana')).status, 200);
+    assert.equal((await inscrever(bruno, 'bruno')).status, 200);
+  });
+
+  test('só aceita endereços dos serviços de push', async () => {
+    for (const ok of ['https://fcm.googleapis.com/fcm/send/x', 'https://web.push.apple.com/x', 'https://updates.push.services.mozilla.com/x', 'https://wns2-par02p.notify.windows.com/x']) assert.ok(endpointPermitido(ok), ok);
+    for (const ruim of ['http://fcm.googleapis.com/x', 'https://fcm.googleapis.com:8443/x', 'https://user@fcm.googleapis.com/x', 'https://fcm.googleapis.com.mal.example/x', 'https://push.apple.com.mal.example/x', 'https://127.0.0.1/x', 'https://169.254.169.254/latest', 'https://localhost/x', 'nada']) assert.ok(!endpointPermitido(ruim), ruim);
+    const r = await t.chamar('POST', '/api/push/inscricao', { cookie: ana, corpo: { ...inscricao('x'), endpoint: 'https://169.254.169.254/latest/meta-data' } });
+    assert.equal(r.status, 400);
+  });
+
+  test('exige sessão e chaves válidas', async () => {
+    assert.equal((await t.chamar('POST', '/api/push/inscricao', { corpo: inscricao('x') })).status, 401);
+    assert.equal((await t.chamar('POST', '/api/push/teste')).status, 401);
+    const r = await t.chamar('POST', '/api/push/inscricao', { cookie: ana, corpo: { endpoint: inscricao('x').endpoint, keys: { p256dh: 'a'.repeat(88), auth: 'a'.repeat(22) } } });
+    assert.equal(r.status, 400);
+  });
+
+  test('pedido avisa só os admins, sem valor nem finalidade', async () => {
+    await t.chamar('POST', '/api/devedor/pedidos', { cookie: ana, corpo: PEDIDO });
+    await t.push.aguardar();
+    assert.deepEqual(t.enviados.map((e) => e.endpoint), [inscricao('admin').endpoint]);
+    assert.equal(titulos()[0], 'Novo pedido de empréstimo');
+    const texto = JSON.stringify(t.enviados);
+    assert.ok(!texto.includes('1200') && !texto.includes('Reforma') && !texto.includes('Ana'));
+  });
+
+  test('aprovar e recusar avisam só quem pediu', async () => {
+    const pedir = async () => ((await (await t.chamar('POST', '/api/devedor/pedidos', { cookie: ana, corpo: PEDIDO })).json()) as { id: number }).id;
+    const id = await pedir();
+    await t.push.aguardar();
+    t.enviados.length = 0;
+    const r = (await (await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO })).json()) as { emprestimoId: number };
+    await t.push.aguardar();
+    assert.deepEqual(t.enviados.map((e) => [e.endpoint, e.mensagem.titulo, e.mensagem.url]), [[inscricao('ana').endpoint, 'Pedido aprovado', `/emprestimos/${r.emprestimoId}`]]);
+    const id2 = await pedir();
+    await t.push.aguardar();
+    t.enviados.length = 0;
+    await t.chamar('POST', `/api/admin/pedidos/${id2}/recusar`, { cookie: admin, corpo: { motivo: 'Motivo privado' } });
+    await t.push.aguardar();
+    assert.deepEqual(t.enviados.map((e) => [e.endpoint, e.mensagem.titulo]), [[inscricao('ana').endpoint, 'Pedido recusado']]);
+    assert.ok(!JSON.stringify(t.enviados).includes('Motivo privado'));
+  });
+
+  test('confirmar pagamento avisa o dono; desmarcar não avisa', async () => {
+    await t.chamar('POST', `/api/admin/emprestimos/${t.empB}/pagamentos`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 100 } });
+    await t.push.aguardar();
+    assert.deepEqual(t.enviados.map((e) => [e.endpoint, e.mensagem.titulo]), [[inscricao('bruno').endpoint, 'Pagamento confirmado']]);
+    t.enviados.length = 0;
+    const rota = `/api/admin/emprestimos/${t.empB}/parcelas/1/alternar`;
+    await t.chamar('POST', rota, { cookie: admin });
+    await t.push.aguardar();
+    assert.equal(t.enviados.length, 1);
+    t.enviados.length = 0;
+    await t.chamar('POST', rota, { cookie: admin });
+    await t.push.aguardar();
+    assert.equal(t.enviados.length, 0);
+  });
+
+  test('falha no envio não impede o pagamento', async () => {
+    t.respostasPush.set(inscricao('bruno').endpoint, 'falha');
+    const r = await t.chamar('POST', `/api/admin/emprestimos/${t.empB}/pagamentos`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 100 } });
+    assert.equal(r.status, 201);
+    await t.push.aguardar();
+  });
+
+  test('inscrição expirada é apagada', async () => {
+    t.respostasPush.set(inscricao('bruno').endpoint, 'expirada');
+    await t.chamar('POST', `/api/admin/emprestimos/${t.empB}/pagamentos`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 100 } });
+    await t.push.aguardar();
+    assert.equal((t.db.prepare('SELECT COUNT(*) AS n FROM push_inscricoes WHERE endpoint = ?').get(inscricao('bruno').endpoint) as { n: number }).n, 0);
+  });
+
+  test('uma conta não remove a inscrição de outra, e o mesmo aparelho muda de dono', async () => {
+    await t.chamar('DELETE', '/api/push/inscricao', { cookie: bruno, corpo: { endpoint: inscricao('ana').endpoint } });
+    assert.equal((t.db.prepare('SELECT COUNT(*) AS n FROM push_inscricoes WHERE endpoint = ?').get(inscricao('ana').endpoint) as { n: number }).n, 1);
+    await inscrever(bruno, 'ana');
+    await t.chamar('POST', `/api/admin/emprestimos/${t.empA}/pagamentos`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 100 } });
+    await t.push.aguardar();
+    assert.equal(t.enviados.length, 0);
+  });
+
+  test('guarda no máximo 10 aparelhos por conta', async () => {
+    for (let i = 0; i < 15; i++) await inscrever(ana, `aparelho-${i}`);
+    const n = t.db.prepare('SELECT COUNT(*) AS n FROM push_inscricoes i JOIN usuarios u ON u.id = i.usuario_id WHERE u.email = ?').get(EMAILS_TESTE.devedorA) as { n: number };
+    assert.equal(n.n, 10);
+  });
+
+  test('teste envia só para a própria conta e tem intervalo', async () => {
+    assert.equal((await t.chamar('POST', '/api/push/teste', { cookie: ana })).status, 200);
+    assert.deepEqual(t.enviados.map((e) => e.endpoint), [inscricao('ana').endpoint]);
+    assert.equal((await t.chamar('POST', '/api/push/teste', { cookie: ana })).status, 409);
+  });
+
+  test('lembra 3 dias antes, no dia e em atraso, uma vez por dia', async () => {
+    // Bruno: parcelas em 10/07, 10/08 e 10/09, com R$ 10 pagos na primeira.
+    assert.equal(await t.push.rodarLembretes(new Date('2026-07-07T11:59:00Z')), 0); // antes das 9h em Brasília
+    assert.ok((await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-07'))) >= 1);
+    assert.equal(await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-07')), 0);
+    assert.ok(t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint && e.mensagem.titulo === 'Parcela vence em 3 dias'));
+    t.enviados.length = 0;
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-10'));
+    assert.ok(t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint && e.mensagem.titulo === 'Parcela vence hoje'));
+    t.enviados.length = 0;
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-11'));
+    assert.ok(t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint && e.mensagem.titulo === 'Parcela em atraso'));
+    t.enviados.length = 0;
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-12'));
+    assert.ok(!t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint));
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-18'));
+    assert.ok(t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint && e.mensagem.titulo === 'Parcela em atraso'));
+    assert.ok(!t.enviados.some((e) => e.endpoint === inscricao('admin').endpoint));
+  });
+
+  test('lembrete que não chegou é tentado de novo', async () => {
+    t.respostasPush.set(inscricao('bruno').endpoint, 'falha');
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-07'));
+    t.respostasPush.delete(inscricao('bruno').endpoint);
+    assert.equal(await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-07')), 1);
+  });
+
+  test('parcela quitada não gera lembrete', async () => {
+    t.repo.registrarPagamento(t.empB, { data: '2026-06-15', valorCentavos: 299000, observacao: null });
+    await t.push.rodarLembretes(NOVE_E_MEIA('2026-07-10'));
+    assert.ok(!t.enviados.some((e) => e.endpoint === inscricao('bruno').endpoint));
   });
 });
 

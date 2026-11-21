@@ -27,4 +27,5 @@ aparelho, e a maioria usará somente o celular.
 - O app depende de internet e de um servidor com HTTPS.
 - SQLite limita a operação a uma instância, o que atende o porte atual.
 - Backup diário fica no volume de dados; falta enviar a cópia para fora do servidor.
-- Notificações locais e backup automático no Drive não existem na versão web.
+- Notificações usam Web Push, com textos sem valores e envio só para os serviços de push dos navegadores.
+- Backup automático no Drive não existe na versão web.

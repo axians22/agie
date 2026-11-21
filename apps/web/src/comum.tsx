@@ -4,7 +4,8 @@ import {
 } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router';
 import { colarMoeda, mascaraInteiro, mascaraMoeda, mascaraPercentual, type ParcelaEstado, type StatusParcela } from '@emprestimos/dominio';
-import type { EmprestimoDto, Papel, StatusPedido } from './api.ts';
+import { api, mensagemErro, type EmprestimoDto, type Papel, type StatusPedido } from './api.ts';
+import { ativarPush, desativarPush, lerEstadoPush, sincronizarPush, type EstadoPush } from './push.ts';
 
 const fmtMoeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 export const moeda = (centavos: number) => fmtMoeda.format(centavos / 100);
@@ -377,6 +378,130 @@ export const appInstalado = () =>
   window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
 export const ehIOS = () =>
   /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function useEstadoPush() {
+  const [estado, setEstado] = useState<EstadoPush>('carregando');
+  useEffect(() => {
+    let ativo = true;
+    lerEstadoPush().then((e) => ativo && setEstado(e)).catch(() => ativo && setEstado('indisponivel'));
+    return () => {
+      ativo = false;
+    };
+  }, []);
+  return [estado, setEstado] as const;
+}
+
+export function useSincronizarPush() {
+  useEffect(() => {
+    sincronizarPush().catch(() => {});
+  }, []);
+}
+
+/** Seção da tela Config. */
+export function Notificacoes() {
+  const avisar = useAviso();
+  const [estado, setEstado] = useEstadoPush();
+  const [ocupado, setOcupado] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  const executar = async (acao: () => Promise<void>) => {
+    setErro(null);
+    setOcupado(true);
+    try {
+      await acao();
+    } catch (e) {
+      setErro(mensagemErro(e));
+    } finally {
+      setOcupado(false);
+    }
+  };
+  const ativar = () => executar(async () => {
+    const novo = await ativarPush();
+    setEstado(novo);
+    if (novo === 'ligada') avisar('Notificações ativadas.');
+  });
+  const desativar = () => executar(async () => {
+    await desativarPush();
+    setEstado('desligada');
+    avisar('Notificações desativadas neste aparelho.');
+  });
+  const testar = () => executar(async () => {
+    await api('POST', '/push/teste');
+    avisar('Notificação de teste enviada.');
+  });
+
+  return (
+    <section className="cartao bloco-acoes">
+      <h2>Notificações</h2>
+      {estado === 'carregando' && <p className="suave">Verificando este aparelho...</p>}
+      {estado === 'indisponivel' && <p className="suave">Este navegador não permite notificações. No Android, use o Chrome.</p>}
+      {estado === 'instalar-ios' && <p className="suave">No iPhone, primeiro adicione o app à Tela de Início e abra por lá. É necessário o iOS 16.4 ou mais novo.</p>}
+      {estado === 'negada' && <p className="suave">As notificações estão bloqueadas. Libere nas configurações do navegador ou do celular e abra o app de novo.</p>}
+      {estado === 'desligada' && (
+        <>
+          <p className="suave">Receba avisos de pedidos, pagamentos e vencimentos neste aparelho.</p>
+          <button className="btn" disabled={ocupado} onClick={ativar}>Ativar notificações</button>
+        </>
+      )}
+      {estado === 'ligada' && (
+        <>
+          <p className="suave">Ativadas neste aparelho. Os avisos não mostram valores na tela bloqueada.</p>
+          <button className="btn sec" disabled={ocupado} onClick={testar}>Enviar notificação de teste</button>
+          <button className="btn sec" disabled={ocupado} onClick={desativar}>Desativar notificações</button>
+        </>
+      )}
+      {erro && <p className="erro" role="alert">{erro}</p>}
+    </section>
+  );
+}
+
+const CHAVE_DISPENSA_PUSH = 'emprestimos-push-dispensado';
+
+/** Convite no Início, que some ao ativar ou ao tocar em "Agora não". */
+export function ConvitePush() {
+  const avisar = useAviso();
+  const [estado, setEstado] = useEstadoPush();
+  const [ocupado, setOcupado] = useState(false);
+  const [dispensado, setDispensado] = useState(() => {
+    try {
+      return localStorage.getItem(CHAVE_DISPENSA_PUSH) === '1';
+    } catch {
+      return false;
+    }
+  });
+  if (estado !== 'desligada' || dispensado) return null;
+
+  const ativar = async () => {
+    setOcupado(true);
+    try {
+      const novo = await ativarPush();
+      setEstado(novo);
+      if (novo === 'ligada') avisar('Notificações ativadas.');
+    } catch (e) {
+      avisar(mensagemErro(e));
+    } finally {
+      setOcupado(false);
+    }
+  };
+  const dispensar = () => {
+    setDispensado(true);
+    try {
+      localStorage.setItem(CHAVE_DISPENSA_PUSH, '1');
+    } catch {
+      // Sem armazenamento, o convite volta na próxima visita.
+    }
+  };
+  return (
+    <section className="cartao bloco-acoes">
+      <strong>Ativar notificações?</strong>
+      <p className="suave">Receba avisos de pedidos, pagamentos e vencimentos.</p>
+      <div className="grade2">
+        <button className="btn sec" onClick={dispensar}>Agora não</button>
+        <button className="btn" disabled={ocupado} onClick={ativar}>Ativar</button>
+      </div>
+    </section>
+  );
+}
 
 export function InstalarApp() {
   const [, atualizar] = useState(0);
