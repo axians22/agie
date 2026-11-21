@@ -4,7 +4,18 @@ Projeto: `/home/vieiralucas/projects/git-repo/eder/agi`
 Stack: Flutter (Android) + SQLite local + Google Sheets (espelho)
 
 ## Etapa atual
-Fase 1 — aguardando aprovação final do plano para iniciar Fase 2 (Implementação)
+Fase 2 — Implementação. Concluídos P0, P1, P2. Próximo: P3 (juros/multa).
+
+## LOCAL REAL DO PROJETO (importante) — MIGRADO PARA O WSL em 2026-11-20
+Projeto agora em: /home/vieiralucas/projects/emprestimos-app (WSL/Linux).
+Flutter nativo do WSL instalado em: ~/flutter (stable 3.35.5). Usar:
+  export PATH="$HOME/flutter/bin:$PATH"; cd ~/projects/emprestimos-app; flutter test
+Motivo da migração: rodar via Flutter do Windows (cmd.exe) travava a sqlite3.dll entre
+execuções de teste (FileSystemException errno=5) e deixava timer pendente do Drift em
+widget test. No Linux isso não ocorre.
+Cópia antiga (Windows): C:\Users\lucas\emprestimos-app — manter só como referência/backup.
+Para gerar APK Android a partir do WSL ainda falta Android SDK no Linux (ou apontar p/ o do Windows).
+Android SDK/emulador JÁ existem no Windows (C:\Users\lucas\AppData\Local\Android\sdk).
 
 ## Etapas
 - [x] 0. Setup mínimo (git init, docs/) — concluído 2026-11-20
@@ -44,3 +55,10 @@ Fase 1 — aguardando aprovação final do plano para iniciar Fase 2 (Implementa
 
 ## Decisões tomadas sozinho na Fase 2
 (nenhuma ainda)
+
+## Atualização 2026-11-21: versão web (PWA)
+O app passou a ser web e instalável, neste repositório. O Flutter segue intacto em `~/projects/emprestimos-app`.
+- Stack: React + TypeScript, API Node (Hono), SQLite (`node:sqlite`), Docker. Ver ADR 0008.
+- Perfis: admin e devedor, com login Google e isolamento por pessoa na API.
+- Regras de cálculo portadas e comparadas com 2.000 casos gerados pelo código Dart.
+- Pendente: credencial Google, chave Pix real, servidor com HTTPS, cópia de backup para fora do servidor e validação jurídica de juros e LGPD.

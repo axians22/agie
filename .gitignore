@@ -27,3 +27,13 @@ google-services.json
 
 # OS
 .DS_Store
+
+# App web
+node_modules/
+dist/
+/data/
+*.db
+*.db-shm
+*.db-wal
+.env.*
+!.env.example

@@ -1,0 +1,18 @@
+{
+  "name": "@emprestimos/api",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_ENV=development PORT=3001 DB_PATH=../../data/dev.db APP_ORIGINS=http://localhost:5173 node --env-file-if-exists=../../.env --watch src/server.ts",
+    "start": "node src/server.ts",
+    "test": "NODE_ENV=test node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@emprestimos/dominio": "*",
+    "@hono/node-server": "^2.1.11",
+    "google-auth-library": "^10.0.0",
+    "hono": "^4.10.0",
+    "zod": "^4.1.0"
+  }
+}

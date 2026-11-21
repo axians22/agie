@@ -1,0 +1,4 @@
+{
+  "extends": "../../packages/dominio/tsconfig.json",
+  "include": ["src", "test"]
+}

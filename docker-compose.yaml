@@ -1,0 +1,27 @@
+# Produção. A configuração vem do arquivo .env, e o app não sobe se faltar algum valor.
+name: emprestimos
+services:
+  app:
+    build: .
+    environment:
+      NODE_ENV: production
+      APP_ORIGINS: ${APP_ORIGINS:?defina APP_ORIGINS no .env}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?defina GOOGLE_CLIENT_ID no .env}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:?defina ADMIN_EMAILS no .env}
+      PIX_CHAVE: ${PIX_CHAVE:?defina PIX_CHAVE no .env}
+      PIX_NOME: ${PIX_NOME:?defina PIX_NOME no .env}
+      PIX_CIDADE: ${PIX_CIDADE:?defina PIX_CIDADE no .env}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8095}:3000"
+    volumes:
+      - dados:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+volumes:
+  dados:

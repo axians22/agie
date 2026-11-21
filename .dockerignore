@@ -1,0 +1,11 @@
+*
+!package.json
+!package-lock.json
+!packages/
+!apps/
+**/node_modules
+**/dist
+**/.env*
+**/*.db*
+packages/dominio/test
+apps/api/test
