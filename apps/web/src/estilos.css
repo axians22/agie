@@ -232,3 +232,8 @@ button.link-txt { flex: none; min-height: 44px; padding: 0 4px; background: none
 @media (max-width: 374px) {
   .nav-item { padding-inline: 1px; font-size: .6rem; letter-spacing: -.01em; }
 }
+.grade2 .valor { font-size: clamp(.86rem, 4.3vw, 1.2rem); letter-spacing: -.01em; }
+@media (max-width: 374px) {
+  .grade2 .cartao { padding: 12px 10px; }
+  .grade2 .valor { font-size: .82rem; }
+}
