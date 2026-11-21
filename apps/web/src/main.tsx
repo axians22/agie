@@ -61,7 +61,7 @@ function App() {
             sessao.usuario.papel === 'admin' ? (
               <AppAdmin key={sessao.usuario.email} usuario={sessao.usuario} aoSair={sair} />
             ) : (
-              <AppDevedor key={sessao.usuario.email} usuario={sessao.usuario} pixDisponivel={sessao.pixDisponivel} aoSair={sair} />
+              <AppDevedor key={sessao.usuario.email} usuario={sessao.usuario} aoSair={sair} />
             )
           }
         />

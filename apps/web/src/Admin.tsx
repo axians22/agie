@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, type TipoMulta } from '@emprestimos/dominio';
-import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
-import { api, mensagemErro, useDados, type EmprestimoDto, type PagamentoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
+import { api, mensagemErro, useDados, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
   CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
-  reaisCampo, SeloEmprestimo, Tela, textoEncargos, tituloEmprestimo, useAviso, Vazio,
+  reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
 } from './comum.tsx';
 
 type ListaE = { emprestimos: EmprestimoDto[]; hoje: string };
@@ -21,7 +21,7 @@ function Avatar({ nome, url }: { nome: string; url?: string | null }) {
 }
 
 function Inicio() {
-  const r = useDados<{ resumo: Resumo }>('/admin/resumo');
+  const r = useDados<{ resumo: Resumo; pedidosPendentes: number }>('/admin/resumo');
   const l = useDados<ListaE>('/admin/emprestimos');
   const res = r.dados?.resumo;
   const atrasados = (l.dados?.emprestimos ?? []).filter((e) => e.temAtraso);
@@ -31,6 +31,12 @@ function Inicio() {
       {!r.erro && !res && <Carregando />}
       {res && (
         <>
+          {!!r.dados?.pedidosPendentes && (
+            <Link to="/pedidos" className="alerta">
+              <strong>{r.dados.pedidosPendentes === 1 ? '1 pedido aguardando' : `${r.dados.pedidosPendentes} pedidos aguardando`}</strong>
+              <span>Analisar ›</span>
+            </Link>
+          )}
           <section className="destaque">
             <div className="rotulo">A receber</div>
             <div className="valor-grande">{moeda(res.totalAReceber)}</div>
@@ -517,6 +523,214 @@ function EmprestimoCampos({ id, pessoas, inicial }: { id?: string; pessoas: Pess
   );
 }
 
+function CartaoPedido({ p }: { p: PedidoDto }) {
+  const nome = nomePessoa(p.pessoa);
+  return (
+    <Link to={`/pedidos/${p.id}`} className="cartao link">
+      <div className="linha">
+        <div className="pessoa-id">
+          <Avatar nome={nome} url={p.pessoa?.avatarUrl} />
+          <div className="min0">
+            <strong className="corta bloco">{nome}</strong>
+            <span className="suave corta bloco">{p.finalidade ?? p.pessoa?.email ?? ''}</span>
+          </div>
+        </div>
+        <div className="dir">
+          <strong>{moeda(p.valorCentavos)}</strong>
+          <div className="suave peq">{p.numParcelas}x</div>
+        </div>
+      </div>
+      <div className="pedido-rodape">
+        <span className="suave peq">Pedido em {dataBr(p.criadoEm)}</span>
+        <SeloPedido status={p.status} />
+      </div>
+    </Link>
+  );
+}
+
+function PedidosAdmin() {
+  const { dados, erro, recarregar } = useDados<{ pedidos: PedidoDto[] }>('/admin/pedidos');
+  useAtualizacao(recarregar);
+  const pendentes = dados?.pedidos.filter((p) => p.status === 'pendente') ?? [];
+  const respondidos = dados?.pedidos.filter((p) => p.status !== 'pendente') ?? [];
+  return (
+    <Tela titulo="Pedidos">
+      {erro && !dados && <Falha mensagem={erro} tentar={recarregar} />}
+      {!erro && !dados && <Carregando />}
+      {dados?.pedidos.length === 0 && <Vazio titulo="Nenhum pedido recebido." />}
+      {pendentes.length > 0 && (
+        <section>
+          <h2>Aguardando ({pendentes.length})</h2>
+          <div className="grade">{pendentes.map((p) => <CartaoPedido key={p.id} p={p} />)}</div>
+        </section>
+      )}
+      {respondidos.length > 0 && (
+        <section>
+          <h2>Respondidos</h2>
+          <div className="grade">{respondidos.map((p) => <CartaoPedido key={p.id} p={p} />)}</div>
+        </section>
+      )}
+    </Tela>
+  );
+}
+
+type PedidoDetalheDto = {
+  pedido: PedidoDto;
+  historico: { saldoCentavos: number; emprestimos: number; atrasados: number };
+  pixConfigurado: boolean;
+  hoje: string;
+};
+
+function PedidoAdmin({ aoMudar }: { aoMudar: () => void }) {
+  const { id } = useParams();
+  const { dados, erro, recarregar } = useDados<PedidoDetalheDto>(`/admin/pedidos/${id}`);
+  const p = dados?.pedido;
+  const nome = nomePessoa(p?.pessoa);
+  return (
+    <Tela titulo="Pedido" voltar>
+      {erro && !p && <Falha mensagem={erro} tentar={recarregar} />}
+      {!erro && !p && <Carregando />}
+      {p && dados && (
+        <>
+          <section className="cartao">
+            <div className="pessoa-id ficha">
+              <Avatar nome={nome} url={p.pessoa?.avatarUrl} />
+              <div className="min0">
+                <strong className="corta bloco">{nome}</strong>
+                <span className="suave corta bloco">{p.pessoa?.email}</span>
+              </div>
+              <SeloPedido status={p.status} />
+            </div>
+            <dl className="dados">
+              <div><dt>Valor pedido</dt><dd>{moeda(p.valorCentavos)}</dd></div>
+              <div><dt>Parcelas</dt><dd>{p.numParcelas}x</dd></div>
+              <div><dt>1º vencimento</dt><dd>{dataBr(p.primeiroVencimento)}</dd></div>
+              {p.finalidade && <div><dt>Finalidade</dt><dd className="quebra">{p.finalidade}</dd></div>}
+              <div><dt>Deve hoje</dt><dd>{moeda(dados.historico.saldoCentavos)}</dd></div>
+              <div><dt>Empréstimos</dt><dd>{dados.historico.emprestimos}</dd></div>
+              <div><dt>Em atraso</dt><dd className={dados.historico.atrasados ? 'txt-ruim' : ''}>{dados.historico.atrasados}</dd></div>
+              {p.motivoRecusa && <div><dt>Motivo da recusa</dt><dd className="quebra">{p.motivoRecusa}</dd></div>}
+            </dl>
+          </section>
+          {p.status === 'aprovado' && p.emprestimoId && <Link className="btn" to={`/emprestimos/${p.emprestimoId}`}>Ver empréstimo</Link>}
+          {p.status === 'pendente' && <AnalisePedido key={p.id} p={p} hoje={dados.hoje} pixConfigurado={dados.pixConfigurado} aoRecusar={() => { recarregar(); aoMudar(); }} />}
+        </>
+      )}
+    </Tela>
+  );
+}
+
+function AnalisePedido({ p, hoje, pixConfigurado, aoRecusar }: { p: PedidoDto; hoje: string; pixConfigurado: boolean; aoRecusar: () => void }) {
+  const navegar = useNavigate();
+  const avisar = useAviso();
+  const [f, setF] = useState({
+    nome: p.finalidade ?? '',
+    valor: reaisCampo(p.valorCentavos),
+    dataEmprestimo: hoje,
+    primeiroVencimento: p.primeiroVencimento >= hoje ? p.primeiroVencimento : adicionaMeses(hoje, 1),
+    numParcelas: String(p.numParcelas),
+    juros: '0',
+    tipoMulta: '0',
+    multa: '0',
+  });
+  const [erro, setErro] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState(false);
+  const [recusando, setRecusando] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const campo = (k: keyof typeof f) => ({ value: f[k], onChange: (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value }) });
+  const numero = (t: string) => {
+    const v = Number(t.trim().replace(',', '.') || '0');
+    return Number.isFinite(v) && v >= 0 ? v : null;
+  };
+
+  const previa = useMemo(() => {
+    const v = parseMoeda(f.valor);
+    const n = Number(f.numParcelas);
+    if (!v || !Number.isInteger(n) || n < 1 || n > 360 || !f.primeiroVencimento) return null;
+    const ps = gerarParcelas(v, n, f.primeiroVencimento);
+    return { primeira: ps[0]!, ultima: ps[ps.length - 1]!, n };
+  }, [f.valor, f.numParcelas, f.primeiroVencimento]);
+
+  const aprovar = async (e: FormEvent) => {
+    e.preventDefault();
+    setErro(null);
+    const valorTotalCentavos = parseMoeda(f.valor);
+    const numParcelas = Number(f.numParcelas);
+    const jurosAoMesPct = numero(f.juros);
+    const tipoMulta = Number(f.tipoMulta) as TipoMulta;
+    const multaValor = tipoMulta === 0 ? 0 : tipoMulta === 1 ? parseMoeda(f.multa || '0') : numero(f.multa);
+    if (!valorTotalCentavos) return setErro('Informe um valor válido.');
+    if (valorTotalCentavos > p.valorCentavos) return setErro('O valor aprovado não pode ser maior que o pedido.');
+    if (!Number.isInteger(numParcelas) || numParcelas < 1 || numParcelas > 360) return setErro('O número de parcelas deve ser de 1 a 360.');
+    if (f.primeiroVencimento < f.dataEmprestimo) return setErro('O 1º vencimento não pode ser antes do empréstimo.');
+    if (jurosAoMesPct === null || jurosAoMesPct > 100) return setErro('Informe juros de 0 a 100%.');
+    if (multaValor === null || (tipoMulta === 2 && multaValor > 100)) return setErro('Informe uma multa válida.');
+    setSalvando(true);
+    try {
+      const r = await api<{ emprestimoId: number }>('POST', `/admin/pedidos/${p.id}/aprovar`, {
+        nome: f.nome.trim() || null, valorTotalCentavos, dataEmprestimo: f.dataEmprestimo, primeiroVencimento: f.primeiroVencimento,
+        numParcelas, jurosAoMesPct, tipoMulta, multaValor,
+      });
+      avisar('Pedido aprovado e empréstimo gerado.');
+      navegar(`/emprestimos/${r.emprestimoId}`, { replace: true });
+    } catch (x) {
+      setErro(mensagemErro(x));
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const recusar = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await api('POST', `/admin/pedidos/${p.id}/recusar`, { motivo: motivo.trim() || null });
+      avisar('Pedido recusado.');
+      setRecusando(false);
+      aoRecusar();
+    } catch (x) {
+      setRecusando(false);
+      setErro(mensagemErro(x));
+    }
+  };
+
+  return (
+    <>
+      <h2>Condições da aprovação</h2>
+      {!pixConfigurado && <Link to="/config" className="alerta"><strong>Configure o Pix antes de aprovar</strong><span>Abrir Config ›</span></Link>}
+      <form className="form" onSubmit={aprovar}>
+        <label>Nome do empréstimo (opcional)<input maxLength={80} {...campo('nome')} /></label>
+        <label>Valor aprovado (R$)<input required inputMode="decimal" {...campo('valor')} /><small>Pode ser menor que o pedido, mas não maior.</small></label>
+        <div className="campos2">
+          <label>Data do empréstimo<input required type="date" {...campo('dataEmprestimo')} /></label>
+          <label>1º vencimento<input required type="date" {...campo('primeiroVencimento')} /></label>
+        </div>
+        <label>Número de parcelas<input required type="number" inputMode="numeric" min={1} max={360} {...campo('numParcelas')} /></label>
+        {previa && (
+          <p className="previa">{previa.n}x de {moeda(previa.primeira.valor)}{previa.ultima.valor !== previa.primeira.valor ? ` (última ${moeda(previa.ultima.valor)})` : ''}, até {dataBr(previa.ultima.vencimento)}</p>
+        )}
+        <fieldset>
+          <legend>Por atraso</legend>
+          <label>Juros ao mês (%)<input inputMode="decimal" {...campo('juros')} /></label>
+          <label>Multa<select {...campo('tipoMulta')}><option value="0">Sem multa</option><option value="1">Valor fixo (R$)</option><option value="2">Percentual (%)</option></select></label>
+          {f.tipoMulta !== '0' && <label>{f.tipoMulta === '1' ? 'Valor da multa (R$)' : 'Multa (%)'}<input inputMode="decimal" {...campo('multa')} /></label>}
+        </fieldset>
+        {erro && <p className="erro" role="alert">{erro}</p>}
+        <button className="btn" disabled={salvando || !pixConfigurado}>{salvando ? 'Aprovando...' : 'Aprovar e gerar empréstimo'}</button>
+        <button type="button" className="btn perigo" onClick={() => setRecusando(true)}>Recusar pedido</button>
+      </form>
+      {recusando && (
+        <Modal titulo="Recusar pedido?" aoFechar={() => setRecusando(false)}>
+          <form className="form" onSubmit={recusar}>
+            <label>Motivo (opcional)<input maxLength={300} value={motivo} onChange={(e) => setMotivo(e.target.value)} /><small>A pessoa verá este motivo no app.</small></label>
+            <button className="btn perigo">Recusar</button>
+            <button type="button" className="btn sec" onClick={() => setRecusando(false)}>Voltar</button>
+          </form>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 type PixDto = { chave: string; nome: string; cidade: string };
 type ConfiguracoesDto = { pix: PixDto | null; admins: Array<{ email: string; principal: boolean }>; podeEditar: boolean };
 
@@ -677,7 +891,7 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
         <h2>Backup</h2>
         <p className="suave peq">Baixe uma cópia de todos os dados. Guarde em local seguro, pois contém dados financeiros.</p>
         <a className="btn sec" href="/api/admin/backup" download>Baixar backup</a>
-        <p className="suave peq">Para trazer os dados do app antigo, envie o backup JSON. Só funciona antes de cadastrar pessoas e empréstimos.</p>
+        <p className="suave peq">Para trazer os dados do app antigo, envie o backup JSON. Só funciona antes de cadastrar pessoas, empréstimos e pedidos.</p>
         <input ref={arquivo} type="file" accept="application/json,.json" hidden aria-label="Arquivo de backup" onChange={(e) => importar(e.target.files?.[0])} />
         <button className="btn sec" onClick={() => arquivo.current?.click()}>Importar backup</button>
         {erro && <p className="erro" role="alert">{erro}</p>}
@@ -688,12 +902,17 @@ function Config({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
 }
 
 export function AppAdmin({ usuario, aoSair }: { usuario: Usuario; aoSair: () => void }) {
-  const { dados } = useDados<{ resumo: Resumo }>('/admin/resumo');
+  const { dados, recarregar } = useDados<{ resumo: Resumo; pedidosPendentes: number }>('/admin/resumo');
+  const { pathname } = useLocation();
+  useAtualizacao(recarregar);
+  useEffect(() => recarregar(), [pathname, recarregar]);
   return (
     <div className="app">
-      <Navegacao papel="admin" atrasados={dados?.resumo.emprestimosAtrasados} />
+      <Navegacao papel="admin" atrasados={dados?.resumo.emprestimosAtrasados} pedidos={dados?.pedidosPendentes} />
       <Routes>
         <Route path="/" element={<Inicio />} />
+        <Route path="/pedidos" element={<PedidosAdmin />} />
+        <Route path="/pedidos/:id" element={<PedidoAdmin aoMudar={recarregar} />} />
         <Route path="/pessoas" element={<Pessoas />} />
         <Route path="/pessoas/nova" element={<PessoaForm />} />
         <Route path="/pessoas/:id" element={<PessoaDetalhe />} />

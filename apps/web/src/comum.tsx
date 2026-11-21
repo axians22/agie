@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router';
 import type { ParcelaEstado, StatusParcela } from '@emprestimos/dominio';
-import type { EmprestimoDto, Papel } from './api.ts';
+import type { EmprestimoDto, Papel, StatusPedido } from './api.ts';
 
 const fmtMoeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 export const moeda = (centavos: number) => fmtMoeda.format(centavos / 100);
@@ -16,6 +16,7 @@ const ICONES: Record<string, ReactNode> = {
   inicio: <path d="M3 11.5 12 4l9 7.5M5.5 10v10h13V10M10 20v-6h4v6" />,
   pessoas: <path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM22 20v-1.5a4 4 0 0 0-3-3.9M16 4.2a3.5 3.5 0 0 1 0 6.6" />,
   emprestimos: <path d="M3 7h18v12H3zM3 11h18M7 15h3" />,
+  pedidos: <path d="M9 4h6v3H9zM9 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-3M9 12h6M9 16h4" />,
   atrasados: <path d="M12 8v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />,
   config: <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4L10.700 6a7.600 7.600 0 0 0-1.700 1l-2.400-1-2 3.400 2 1.600a7.600 7.600 0 0 0 0 2l-2 1.600 2 3.400 2.400-1a7.600 7.600 0 0 0 1.700 1l.3 2.500h4l.3-2.500a7.600 7.600 0 0 0 1.700-1l2.400 1 2-3.400Z" />,
   voltar: <path d="m15 5-7 7 7 7" />,
@@ -30,18 +31,21 @@ export function Icone({ nome }: { nome: keyof typeof ICONES | string }) {
   );
 }
 
-export function Navegacao({ papel, atrasados }: { papel: Papel; atrasados?: number }) {
+export function Navegacao({ papel, atrasados, pedidos }: { papel: Papel; atrasados?: number; pedidos?: number }) {
   const itens =
     papel === 'admin'
       ? [
           ['/', 'Início', 'inicio'],
+          ['/pedidos', 'Pedidos', 'pedidos'],
           ['/pessoas', 'Pessoas', 'pessoas'],
           ['/emprestimos', 'Empréstimos', 'emprestimos'],
-          ['/atrasados', 'Atrasados', 'atrasados'],
+          // No celular cabem cinco itens; os atrasados continuam acessíveis pelo Início.
+          ['/atrasados', 'Atrasados', 'atrasados', 'nav-largo'],
           ['/config', 'Config', 'config'],
         ]
       : [
           ['/', 'Início', 'inicio'],
+          ['/pedidos', 'Pedidos', 'pedidos'],
           ['/emprestimos', 'Empréstimos', 'emprestimos'],
           ['/atrasados', 'Atrasados', 'atrasados'],
           ['/config', 'Config', 'config'],
@@ -49,11 +53,12 @@ export function Navegacao({ papel, atrasados }: { papel: Papel; atrasados?: numb
   return (
     <nav className="nav" aria-label="Navegação principal">
       <div className="nav-marca">Empréstimos</div>
-      {itens.map(([para, rotulo, icone]) => (
-        <NavLink key={para} to={para!} end={para === '/'} className="nav-item">
+      {itens.map(([para, rotulo, icone, extra]) => (
+        <NavLink key={para} to={para!} end={para === '/'} className={`nav-item ${extra ?? ''}`}>
           <span className="nav-icone">
             <Icone nome={icone!} />
             {para === '/atrasados' && !!atrasados && <span className="nav-ponto" aria-label={`${atrasados} em atraso`} />}
+            {para === '/pedidos' && !!pedidos && <span className="nav-contagem" aria-label={`${pedidos} aguardando`}>{pedidos > 9 ? '9+' : pedidos}</span>}
           </span>
           <span>{rotulo}</span>
         </NavLink>
@@ -127,6 +132,33 @@ export function SeloEmprestimo({ e }: { e: Pick<EmprestimoDto, 'saldo' | 'temAtr
   if (e.saldo.quitado) return <span className="selo ok">Quitado</span>;
   if (e.temAtraso) return <span className="selo ruim">Em atraso</span>;
   return <span className="selo neutro">Em dia</span>;
+}
+
+const SELOS_PEDIDO: Record<StatusPedido, [string, string]> = {
+  pendente: ['aviso', 'Aguardando'],
+  aprovado: ['ok', 'Aprovado'],
+  recusado: ['ruim', 'Recusado'],
+  cancelado: ['neutro', 'Cancelado'],
+};
+
+export function SeloPedido({ status }: { status: StatusPedido }) {
+  const [classe, texto] = SELOS_PEDIDO[status];
+  return <span className={`selo ${classe}`}>{texto}</span>;
+}
+
+/** Atualiza a tela a cada 30 segundos e quando o app volta para a frente. */
+export function useAtualizacao(recarregar: () => void, intervalo = 30_000) {
+  useEffect(() => {
+    const atualizar = () => {
+      if (!document.hidden) recarregar();
+    };
+    const t = setInterval(atualizar, intervalo);
+    document.addEventListener('visibilitychange', atualizar);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', atualizar);
+    };
+  }, [recarregar, intervalo]);
 }
 
 export function Progresso({ pago, total }: { pago: number; total: number }) {

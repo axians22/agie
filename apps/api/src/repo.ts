@@ -67,6 +67,28 @@ export interface EmprestimoVisao {
   valorPagarAgora: number;
 }
 
+export type StatusPedido = 'pendente' | 'aprovado' | 'recusado' | 'cancelado';
+
+export interface Pedido {
+  id: number;
+  pessoaId: number;
+  valorCentavos: number;
+  numParcelas: number;
+  primeiroVencimento: string;
+  finalidade: string | null;
+  status: StatusPedido;
+  motivoRecusa: string | null;
+  emprestimoId: number | null;
+  criadoEm: string;
+  decididoEm: string | null;
+}
+
+export type DadosPedido = Pick<Pedido, 'valorCentavos' | 'numParcelas' | 'primeiroVencimento' | 'finalidade'>;
+
+const C_PEDIDO = `id, pessoa_id AS pessoaId, valor_centavos AS valorCentavos, num_parcelas AS numParcelas,
+  primeiro_vencimento AS primeiroVencimento, finalidade, status, motivo_recusa AS motivoRecusa,
+  emprestimo_id AS emprestimoId, criado_em AS criadoEm, decidido_em AS decididoEm`;
+
 export interface DadosPixConfig {
   chave: string;
   nome: string;
@@ -110,7 +132,7 @@ export class Repo {
     const e = normalizarEmail(email);
     return transacao(this.db, () => {
       const p = this.db
-        .prepare('SELECT id, via_google AS viaGoogle, (SELECT COUNT(*) FROM emprestimos WHERE pessoa_id = pessoas.id) AS n FROM pessoas WHERE lower(email) = ?')
+        .prepare('SELECT id, via_google AS viaGoogle, (SELECT COUNT(*) FROM emprestimos WHERE pessoa_id = pessoas.id) + (SELECT COUNT(*) FROM pedidos WHERE pessoa_id = pessoas.id) AS n FROM pessoas WHERE lower(email) = ?')
         .get(e) as { id: number; viaGoogle: number; n: number } | undefined;
       if (p && (!p.viaGoogle || p.n > 0)) return false;
       if (p) this.db.prepare('DELETE FROM pessoas WHERE id = ?').run(p.id);
@@ -187,6 +209,56 @@ export class Repo {
       // Encerra a conta junto, para a pessoa não voltar à lista sem um novo login.
       if (p.email) this.db.prepare('DELETE FROM usuarios WHERE email = ? AND email NOT IN (SELECT email FROM admins)').run(normalizarEmail(p.email));
       return true;
+    });
+  }
+
+  // Pedidos de empréstimo
+  pedido(id: number): Pedido | null {
+    return (this.db.prepare(`SELECT ${C_PEDIDO} FROM pedidos WHERE id = ?`).get(id) as unknown as Pedido) ?? null;
+  }
+  pedidosDaPessoa(pessoaId: number): Pedido[] {
+    return this.db.prepare(`SELECT ${C_PEDIDO} FROM pedidos WHERE pessoa_id = ? ORDER BY id DESC`).all(pessoaId) as unknown as Pedido[];
+  }
+  todosPedidos(): Pedido[] {
+    return this.db
+      .prepare(`SELECT ${C_PEDIDO} FROM pedidos ORDER BY status = 'pendente' DESC, CASE WHEN status = 'pendente' THEN id ELSE -id END`)
+      .all() as unknown as Pedido[];
+  }
+  contarPedidosPendentes(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM pedidos WHERE status = 'pendente'").get() as { n: number }).n;
+  }
+  /** Devolve null se a pessoa já tem um pedido aguardando. */
+  criarPedido(pessoaId: number, d: DadosPedido): number | null {
+    return transacao(this.db, () => {
+      if (this.db.prepare("SELECT 1 FROM pedidos WHERE pessoa_id = ? AND status = 'pendente'").get(pessoaId)) return null;
+      const r = this.db
+        .prepare('INSERT INTO pedidos (pessoa_id, valor_centavos, num_parcelas, primeiro_vencimento, finalidade) VALUES (?,?,?,?,?)')
+        .run(pessoaId, d.valorCentavos, d.numParcelas, d.primeiroVencimento, d.finalidade);
+      return Number(r.lastInsertRowid);
+    });
+  }
+  cancelarPedido(id: number, pessoaId: number, agora: Date): boolean {
+    const r = this.db
+      .prepare("UPDATE pedidos SET status = 'cancelado', decidido_em = ? WHERE id = ? AND pessoa_id = ? AND status = 'pendente'")
+      .run(agora.toISOString(), id, pessoaId);
+    return Number(r.changes) > 0;
+  }
+  recusarPedido(id: number, motivo: string | null, por: string, agora: Date): boolean {
+    const r = this.db
+      .prepare("UPDATE pedidos SET status = 'recusado', motivo_recusa = ?, decidido_por = ?, decidido_em = ? WHERE id = ? AND status = 'pendente'")
+      .run(motivo, por, agora.toISOString(), id);
+    return Number(r.changes) > 0;
+  }
+  /** Gera o empréstimo e fecha o pedido juntos. Devolve null se o pedido já foi decidido. */
+  aprovarPedido(id: number, d: Omit<DadosEmprestimo, 'pessoaId'>, por: string, agora: Date): number | null {
+    return transacao(this.db, () => {
+      const p = this.pedido(id);
+      if (!p || p.status !== 'pendente') return null;
+      const emprestimoId = this.criarEmprestimo({ ...d, pessoaId: p.pessoaId });
+      this.db
+        .prepare("UPDATE pedidos SET status = 'aprovado', emprestimo_id = ?, decidido_por = ?, decidido_em = ? WHERE id = ?")
+        .run(emprestimoId, por, agora.toISOString(), id);
+      return emprestimoId;
     });
   }
 
@@ -315,8 +387,8 @@ export class Repo {
   /** Importa um backup para um banco vazio e confere que os totais não mudaram. */
   importar(b: BackupEntrada): { pessoas: number; emprestimos: number; pagamentos: number } {
     return transacao(this.db, () => {
-      const manuais = this.db.prepare('SELECT (SELECT COUNT(*) FROM pessoas WHERE via_google = 0 OR email IS NULL) + (SELECT COUNT(*) FROM emprestimos) AS n').get() as { n: number };
-      if (manuais.n > 0) throw new ErroImportacao('O banco já tem dados. A importação só é feita antes de cadastrar pessoas e empréstimos.');
+      const manuais = this.db.prepare('SELECT (SELECT COUNT(*) FROM pessoas WHERE via_google = 0 OR email IS NULL) + (SELECT COUNT(*) FROM emprestimos) + (SELECT COUNT(*) FROM pedidos) AS n').get() as { n: number };
+      if (manuais.n > 0) throw new ErroImportacao('O banco já tem dados. A importação só é feita antes de cadastrar pessoas, empréstimos e pedidos.');
       // Quem só fez login sai antes da importação e volta depois, sem disputar os ids do backup.
       const contasGoogle = this.db
         .prepare("SELECT email, trim(nome || ' ' || sobrenome) AS nome, avatar_url AS avatarUrl FROM pessoas")

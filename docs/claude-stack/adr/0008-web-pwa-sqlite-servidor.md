@@ -20,6 +20,8 @@ aparelho, e a maioria usará somente o celular.
   campos, sem observações do credor.
 - Regras de cálculo em `packages/dominio`, verificadas contra casos gerados pelo código Dart original.
 - Pix por BR Code estático, com baixa confirmada pelo credor.
+- Usuário faz um pedido por vez. O admin aprova ou recusa; aprovar cria o empréstimo na mesma transação e nunca acima
+  do valor pedido.
 
 ## Consequências
 - O app depende de internet e de um servidor com HTTPS.

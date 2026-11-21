@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { dataValida, gerarBrCode, hojeBrasil, normalizarChavePix } from '@emprestimos/dominio';
+import { adicionaMeses, dataValida, gerarBrCode, hojeBrasil, normalizarChavePix } from '@emprestimos/dominio';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -15,7 +15,7 @@ import {
   type VerificadorGoogle,
 } from './auth.ts';
 import { normalizarEmail, type Config } from './config.ts';
-import { ErroImportacao, Repo, type EmprestimoVisao } from './repo.ts';
+import { ErroImportacao, Repo, type EmprestimoVisao, type Pedido } from './repo.ts';
 
 type Ambiente = { Variables: { usuario: UsuarioSessao } };
 
@@ -62,6 +62,30 @@ const esquemaPagamento = z.strictObject({
   valorCentavos: z.number().int().positive().max(1_000_000_000_00),
   observacao: textoOpc(500),
 });
+
+const esquemaPedido = z.strictObject({
+  valorCentavos: z.number().int().positive().max(1_000_000_000_00),
+  numParcelas: z.number().int().min(1).max(360),
+  primeiroVencimento: data,
+  finalidade: textoOpc(80),
+});
+
+const esquemaAprovacao = z
+  .strictObject({
+    nome: textoOpc(80),
+    valorTotalCentavos: z.number().int().positive().max(1_000_000_000_00),
+    dataEmprestimo: data,
+    primeiroVencimento: data,
+    numParcelas: z.number().int().min(1).max(360),
+    jurosAoMesPct: z.number().min(0).max(100).default(0),
+    tipoMulta: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(0),
+    multaValor: z.number().min(0).max(1_000_000_000_00).default(0),
+  })
+  .refine((e) => e.tipoMulta !== 2 || e.multaValor <= 100, { message: 'multa percentual acima de 100%' })
+  .refine((e) => e.tipoMulta !== 1 || Number.isInteger(e.multaValor), { message: 'multa fixa deve estar em centavos' })
+  .refine((e) => e.primeiroVencimento >= e.dataEmprestimo, { path: ['primeiroVencimento'], message: 'vencimento antes do empréstimo' });
+
+const esquemaRecusa = z.strictObject({ motivo: textoOpc(300) });
 
 const esquemaPix = z.strictObject({
   chave: z.string().trim().min(1).max(100),
@@ -169,6 +193,22 @@ function dtoDevedor(v: EmprestimoVisao) {
     temAtraso: v.consolidado.temAtraso,
     valorPagarAgora: v.valorPagarAgora,
     pagamentos: v.pagamentos.map((p) => ({ id: p.id, data: p.data, valorCentavos: p.valorCentavos })),
+  };
+}
+
+/** Lista explícita do que o usuário vê do próprio pedido: não inclui quem decidiu. */
+function dtoPedido(p: Pedido) {
+  return {
+    id: p.id,
+    valorCentavos: p.valorCentavos,
+    numParcelas: p.numParcelas,
+    primeiroVencimento: p.primeiroVencimento,
+    finalidade: p.finalidade,
+    status: p.status,
+    motivoRecusa: p.motivoRecusa,
+    emprestimoId: p.emprestimoId,
+    criadoEm: p.criadoEm,
+    decididoEm: p.decididoEm,
   };
 }
 
@@ -317,7 +357,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
 
   app.get('/api/devedor/resumo', (c) => c.json({ resumo: repo.resumo(hoje(), doDevedor(c)), hoje: hoje() }));
   app.get('/api/devedor/emprestimos', (c) => c.json({ emprestimos: repo.visoes(hoje(), doDevedor(c)).map(dtoDevedor), hoje: hoje() }));
-  app.get('/api/devedor/emprestimos/:id', (c) => c.json({ emprestimo: dtoDevedor(emprestimoDoDevedor(c)), hoje: hoje() }));
+  app.get('/api/devedor/emprestimos/:id', (c) => c.json({ emprestimo: dtoDevedor(emprestimoDoDevedor(c)), pixDisponivel: !!repo.pixConfig(), hoje: hoje() }));
   app.get('/api/devedor/emprestimos/:id/pix', (c) => {
     const v = emprestimoDoDevedor(c);
     const pix = repo.pixConfig();
@@ -332,9 +372,27 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     });
   });
 
+  app.get('/api/devedor/pedidos', (c) => c.json({ pedidos: repo.pedidosDaPessoa(doDevedor(c)).map(dtoPedido), hoje: hoje() }));
+  app.post('/api/devedor/pedidos', async (c) => {
+    const pessoaId = doDevedor(c);
+    if (!pessoaId) throw new ErroHttp(409, 'SEM_CADASTRO', 'Saia e entre de novo para fazer um pedido.');
+    const d = await corpo(c, esquemaPedido);
+    if (d.primeiroVencimento < hoje()) throw new ErroHttp(400, 'VENCIMENTO_PASSADO', 'O primeiro vencimento não pode estar no passado.');
+    const id = repo.criarPedido(pessoaId, d);
+    if (id === null) throw new ErroHttp(409, 'PEDIDO_ABERTO', 'Você já tem um pedido aguardando resposta.');
+    return c.json({ id }, 201);
+  });
+  app.post('/api/devedor/pedidos/:id/cancelar', (c) => {
+    const id = idParam(c);
+    const p = repo.pedido(id);
+    if (!p || p.pessoaId !== doDevedor(c)) throw naoEncontrado();
+    if (!repo.cancelarPedido(id, p.pessoaId, agora())) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    return c.json({ ok: true });
+  });
+
   // ---------- Admin ----------
   app.get('/api/admin/resumo', (c) => {
-    return c.json({ resumo: repo.resumo(hoje()), hoje: hoje() });
+    return c.json({ resumo: repo.resumo(hoje()), pedidosPendentes: repo.contarPedidosPendentes(), hoje: hoje() });
   });
 
   app.get('/api/admin/pessoas', (c) => {
@@ -424,6 +482,55 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     return c.body(null, 204);
   });
 
+  const dtoPedidoAdmin = (p: Pedido) => {
+    const pessoa = repo.pessoa(p.pessoaId)!;
+    return {
+      ...dtoPedido(p),
+      pessoa: { id: pessoa.id, nome: pessoa.nome, sobrenome: pessoa.sobrenome, telefone: pessoa.telefone, email: pessoa.email, avatarUrl: pessoa.avatarUrl },
+    };
+  };
+  const pedidoPendente = (id: number) => {
+    const p = repo.pedido(id);
+    if (!p) throw naoEncontrado();
+    if (p.status !== 'pendente') throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    return p;
+  };
+
+  app.get('/api/admin/pedidos', (c) => c.json({ pedidos: repo.todosPedidos().map(dtoPedidoAdmin), hoje: hoje() }));
+  app.get('/api/admin/pedidos/:id', (c) => {
+    const p = repo.pedido(idParam(c));
+    if (!p) throw naoEncontrado();
+    const visoes = repo.visoes(hoje(), p.pessoaId);
+    return c.json({
+      pedido: dtoPedidoAdmin(p),
+      historico: {
+        saldoCentavos: visoes.reduce((s, v) => s + v.consolidado.saldo.saldo, 0),
+        emprestimos: visoes.length,
+        atrasados: visoes.filter((v) => v.consolidado.temAtraso).length,
+      },
+      pixConfigurado: !!repo.pixConfig(),
+      hoje: hoje(),
+    });
+  });
+  app.post('/api/admin/pedidos/:id/aprovar', async (c) => {
+    const id = idParam(c);
+    const p = pedidoPendente(id);
+    const d = await corpo(c, esquemaAprovacao);
+    if (!repo.pixConfig()) throw new ErroHttp(409, 'PIX_NAO_CONFIGURADO', 'Configure o Pix em Config antes de aprovar.');
+    if (d.valorTotalCentavos > p.valorCentavos) throw new ErroHttp(400, 'VALOR_ACIMA', 'O valor aprovado não pode ser maior que o pedido.');
+    const dataPrevistaPagamento = adicionaMeses(d.primeiroVencimento, d.numParcelas - 1);
+    const emprestimoId = repo.aprovarPedido(id, { ...d, dataPrevistaPagamento }, c.get('usuario').email, agora());
+    if (emprestimoId === null) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    return c.json({ emprestimoId }, 201);
+  });
+  app.post('/api/admin/pedidos/:id/recusar', async (c) => {
+    const id = idParam(c);
+    pedidoPendente(id);
+    const { motivo } = await corpo(c, esquemaRecusa);
+    if (!repo.recusarPedido(id, motivo, c.get('usuario').email, agora())) throw new ErroHttp(409, 'PEDIDO_DECIDIDO', 'Este pedido já foi respondido.');
+    return c.json({ ok: true });
+  });
+
   // ---------- Configurações: Pix e administradores só mudam pelo admin principal ----------
   const ehPrincipal = (c: Context<Ambiente>) => config.adminEmails.has(normalizarEmail(c.get('usuario').email));
   const exigirPrincipal = (c: Context<Ambiente>) => {
@@ -463,7 +570,7 @@ export function criarApp({ db, config, google, agora = () => new Date() }: Depen
     const email = normalizarEmail((await corpo(c, esquemaAdmin)).email);
     if (config.adminEmails.has(email) || repo.ehAdminCadastrado(email)) throw new ErroHttp(409, 'EMAIL_ADMIN', 'Este e-mail já é de um administrador.');
     if (!repo.promoverAdmin(email, c.get('usuario').email)) {
-      throw new ErroHttp(409, 'EMAIL_EM_USO', 'Esta pessoa tem empréstimos ou cadastro manual e não pode virar administrador.');
+      throw new ErroHttp(409, 'EMAIL_EM_USO', 'Esta pessoa tem empréstimos, pedidos ou cadastro manual e não pode virar administrador.');
     }
     return c.json({ email }, 201);
   });

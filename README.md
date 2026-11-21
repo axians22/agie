@@ -39,4 +39,7 @@ Copie essa pasta para fora do servidor, porque um backup no mesmo disco não pro
 Depois do primeiro login, abra **Config** e salve a chave, o nome e a cidade do Pix. Os devedores só geram o QR Code
 depois disso. O e-mail de `ADMIN_EMAILS` é o administrador principal: só ele altera o Pix e a lista de administradores.
 
+O usuário pede um empréstimo em **Pedidos**. O admin aprova ou recusa, e a aprovação gera o empréstimo, as parcelas e o
+QR Code. O backup JSON não inclui os pedidos; o backup diário do banco inclui.
+
 Para trazer os dados do app Flutter, gere o JSON de backup nele e use **Config > Importar backup**, com o sistema vazio.

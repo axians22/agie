@@ -443,6 +443,125 @@ describe('configurações do admin', () => {
   });
 });
 
+describe('pedidos de empréstimo', () => {
+  const PEDIDO = { valorCentavos: 120000, numParcelas: 3, primeiroVencimento: '2026-07-15', finalidade: 'Reforma' };
+  const APROVACAO = { nome: 'Reforma', valorTotalCentavos: 120000, dataEmprestimo: '2026-06-15', primeiroVencimento: '2026-07-15', numParcelas: 3, jurosAoMesPct: 2, tipoMulta: 2, multaValor: 2 };
+  let t: Ctx;
+  let admin: string;
+  let ana: string;
+  let bruno: string;
+  const pedir = async (cookie = ana, corpo: unknown = PEDIDO) => t.chamar('POST', '/api/devedor/pedidos', { cookie, corpo });
+  const novo = async () => ((await (await pedir()).json()) as { id: number }).id;
+  beforeEach(async () => {
+    t = montar();
+    admin = await t.login(EMAILS_TESTE.admin);
+    ana = await t.login(EMAILS_TESTE.devedorA);
+    bruno = await t.login(EMAILS_TESTE.devedorB);
+  });
+
+  test('pedido chega ao admin como pendente', async () => {
+    const id = await novo();
+    const r = (await (await t.chamar('GET', '/api/admin/resumo', { cookie: admin })).json()) as { pedidosPendentes: number };
+    assert.equal(r.pedidosPendentes, 1);
+    const l = (await (await t.chamar('GET', '/api/admin/pedidos', { cookie: admin })).json()) as { pedidos: Array<{ id: number; status: string; pessoa: { email: string } }> };
+    assert.deepEqual(l.pedidos.map((p) => [p.id, p.status, p.pessoa.email]), [[id, 'pendente', EMAILS_TESTE.devedorA]]);
+  });
+
+  test('só um pedido aguardando por pessoa, e cancelar libera outro', async () => {
+    const id = await novo();
+    assert.equal((await pedir()).status, 409);
+    assert.equal((await t.chamar('POST', `/api/devedor/pedidos/${id}/cancelar`, { cookie: ana })).status, 200);
+    assert.equal((await pedir()).status, 201);
+  });
+
+  test('recusa valor inválido e vencimento no passado', async () => {
+    for (const ruim of [{ ...PEDIDO, valorCentavos: 0 }, { ...PEDIDO, numParcelas: 0 }, { ...PEDIDO, primeiroVencimento: '2026-06-14' }, { ...PEDIDO, pessoaId: 2 }]) {
+      assert.equal((await pedir(ana, ruim)).status, 400);
+    }
+  });
+
+  test('um usuário não vê nem cancela o pedido de outro', async () => {
+    const id = await novo();
+    const l = (await (await t.chamar('GET', '/api/devedor/pedidos', { cookie: bruno })).json()) as { pedidos: unknown[] };
+    assert.deepEqual(l.pedidos, []);
+    assert.equal((await t.chamar('POST', `/api/devedor/pedidos/${id}/cancelar`, { cookie: bruno })).status, 404);
+  });
+
+  test('usuário não aprova, não recusa e não lista pedidos do admin', async () => {
+    const id = await novo();
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: ana, corpo: APROVACAO })).status, 403);
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/recusar`, { cookie: ana, corpo: {} })).status, 403);
+    assert.equal((await t.chamar('GET', '/api/admin/pedidos', { cookie: ana })).status, 403);
+    assert.equal((await t.chamar('POST', '/api/devedor/pedidos', { cookie: admin, corpo: PEDIDO })).status, 403);
+  });
+
+  test('aprovar gera o empréstimo, as parcelas e o QR para quem pediu', async () => {
+    const id = await novo();
+    const r = await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO });
+    assert.equal(r.status, 201);
+    const { emprestimoId } = (await r.json()) as { emprestimoId: number };
+    const e = (await (await t.chamar('GET', `/api/devedor/emprestimos/${emprestimoId}`, { cookie: ana })).json()) as { emprestimo: { saldo: { parcelas: Array<{ valor: number; vencimento: string }> }; valorPagarAgora: number; dataPrevistaPagamento: string }; pixDisponivel: boolean };
+    assert.deepEqual(e.emprestimo.saldo.parcelas.map((p) => [p.valor, p.vencimento]), [[40000, '2026-07-15'], [40000, '2026-08-15'], [40000, '2026-09-15']]);
+    assert.equal(e.emprestimo.dataPrevistaPagamento, '2026-09-15');
+    assert.equal(e.emprestimo.valorPagarAgora, 40000);
+    assert.equal(e.pixDisponivel, true);
+    const pix = (await (await t.chamar('GET', `/api/devedor/emprestimos/${emprestimoId}/pix`, { cookie: ana })).json()) as { codigo: string; valorCentavos: number };
+    assert.equal(pix.valorCentavos, 40000);
+    assert.ok(pix.codigo.includes('5406400.00'));
+    assert.equal((await t.chamar('GET', `/api/devedor/emprestimos/${emprestimoId}`, { cookie: bruno })).status, 404);
+    const l = (await (await t.chamar('GET', '/api/devedor/pedidos', { cookie: ana })).json()) as { pedidos: Array<{ status: string; emprestimoId: number }> };
+    assert.deepEqual([l.pedidos[0]!.status, l.pedidos[0]!.emprestimoId], ['aprovado', emprestimoId]);
+  });
+
+  test('aprovar duas vezes gera um único empréstimo', async () => {
+    const id = await novo();
+    const rs = await Promise.all([1, 2].map(() => t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO })));
+    assert.deepEqual(rs.map((r) => r.status).sort(), [201, 409]);
+    assert.equal(t.repo.visoes('2026-06-15', t.a).length, 2);
+  });
+
+  test('não aprova acima do valor pedido nem sem Pix', async () => {
+    const id = await novo();
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: { ...APROVACAO, valorTotalCentavos: 120001 } })).status, 400);
+    t.db.exec('DELETE FROM config_pix');
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO })).status, 409);
+    assert.equal(t.repo.visoes('2026-06-15', t.a).length, 1);
+    assert.equal(t.repo.pedido(id)!.status, 'pendente');
+  });
+
+  test('aprova valor menor', async () => {
+    const id = await novo();
+    const r = await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: { ...APROVACAO, valorTotalCentavos: 90000 } });
+    const { emprestimoId } = (await r.json()) as { emprestimoId: number };
+    assert.equal(t.repo.emprestimo(emprestimoId)!.valorTotalCentavos, 90000);
+  });
+
+  test('recusar guarda o motivo, não gera empréstimo e não permite aprovar depois', async () => {
+    const id = await novo();
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/recusar`, { cookie: admin, corpo: { motivo: 'Sem limite' } })).status, 200);
+    const l = (await (await t.chamar('GET', '/api/devedor/pedidos', { cookie: ana })).json()) as { pedidos: Array<{ status: string; motivoRecusa: string }> };
+    assert.deepEqual([l.pedidos[0]!.status, l.pedidos[0]!.motivoRecusa], ['recusado', 'Sem limite']);
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO })).status, 409);
+    assert.equal(t.repo.visoes('2026-06-15', t.a).length, 1);
+  });
+
+  test('pedido cancelado não pode ser aprovado', async () => {
+    const id = await novo();
+    await t.chamar('POST', `/api/devedor/pedidos/${id}/cancelar`, { cookie: ana });
+    assert.equal((await t.chamar('POST', `/api/admin/pedidos/${id}/aprovar`, { cookie: admin, corpo: APROVACAO })).status, 409);
+  });
+
+  test('quem tem pedido não vira admin e a importação fica bloqueada', async () => {
+    const c = await t.login('novo@teste.local');
+    assert.equal((await pedir(c)).status, 201);
+    assert.equal((await t.chamar('POST', '/api/admin/configuracoes/admins', { cookie: admin, corpo: { email: 'novo@teste.local' } })).status, 409);
+    t.db.exec('DELETE FROM emprestimos; DELETE FROM pessoas WHERE via_google = 0');
+    const backup = { formato: 1, pessoas: [], emprestimos: [], pagamentos: [] };
+    assert.equal((await t.chamar('POST', '/api/admin/importar', { cookie: admin, corpo: backup })).status, 409);
+    assert.equal(t.repo.todosPedidos().length, 1);
+  });
+});
+
 describe('backup em arquivo', () => {
   test('cria cópia íntegra e mantém só as recentes', () => {
     const pasta = mkdtempSync(join(tmpdir(), 'emprestimos-bkp-'));

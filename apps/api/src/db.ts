@@ -76,6 +76,25 @@ const MIGRACOES = [
   ALTER TABLE pessoas ADD COLUMN avatar_url TEXT;
   ALTER TABLE pessoas ADD COLUMN via_google INTEGER NOT NULL DEFAULT 0 CHECK (via_google IN (0,1));
   `,
+  `
+  CREATE TABLE pedidos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pessoa_id INTEGER NOT NULL REFERENCES pessoas(id) ON DELETE CASCADE,
+    valor_centavos INTEGER NOT NULL CHECK (valor_centavos > 0),
+    num_parcelas INTEGER NOT NULL CHECK (num_parcelas BETWEEN 1 AND 360),
+    primeiro_vencimento TEXT NOT NULL,
+    finalidade TEXT,
+    status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente','aprovado','recusado','cancelado')),
+    motivo_recusa TEXT,
+    emprestimo_id INTEGER REFERENCES emprestimos(id) ON DELETE SET NULL,
+    decidido_por TEXT,
+    decidido_em TEXT,
+    criado_em TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX pedidos_pessoa ON pedidos (pessoa_id, id);
+  CREATE INDEX pedidos_status ON pedidos (status, id);
+  CREATE UNIQUE INDEX pedidos_um_pendente ON pedidos (pessoa_id) WHERE status = 'pendente';
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {

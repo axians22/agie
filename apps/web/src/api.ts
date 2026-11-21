@@ -107,4 +107,20 @@ export interface PessoaDto {
   temAtraso?: boolean;
 }
 
+export type StatusPedido = 'pendente' | 'aprovado' | 'recusado' | 'cancelado';
+
+export interface PedidoDto {
+  id: number;
+  valorCentavos: number;
+  numParcelas: number;
+  primeiroVencimento: string;
+  finalidade: string | null;
+  status: StatusPedido;
+  motivoRecusa: string | null;
+  emprestimoId: number | null;
+  criadoEm: string;
+  decididoEm: string | null;
+  pessoa?: PessoaDto;
+}
+
 export type { Resumo };
