@@ -14,6 +14,12 @@ import {
   type UsuarioSessao,
   type VerificadorGoogle,
 } from './auth.ts';
+import {
+  ArquivosComprovante,
+  dataExpiracaoComprovante,
+  detectarTipoComprovante,
+  MAX_COMPROVANTE_BYTES,
+} from './comprovantes.ts';
 import { normalizarEmail, type Config } from './config.ts';
 import { chavesInscricaoValidas, endpointPermitido, ServicoPush } from './push.ts';
 import { ErroImportacao, Repo, type AvisoPagamento, type EmprestimoVisao, type Pedido } from './repo.ts';
@@ -25,12 +31,15 @@ export interface Dependencias {
   config: Config;
   google: VerificadorGoogle;
   push?: ServicoPush;
+  comprovantes?: ArquivosComprovante;
   agora?: () => Date;
 }
 
 const ROTAS_PUBLICAS = new Set(['/api/saude', '/api/auth/config', '/api/auth/google', '/api/auth/google/redirect', '/api/auth/logout']);
 const LIMITE_JSON = 100 * 1024;
 const LIMITE_BACKUP = 10 * 1024 * 1024;
+const LIMITE_COMPROVANTE = MAX_COMPROVANTE_BYTES + 64 * 1024;
+const ROTA_COMPROVANTE = /^\/api\/devedor\/emprestimos\/\d+\/pagamento-informado$/;
 
 const data = z.string().refine(dataValida, 'data inválida');
 const textoOpc = (max: number) =>
@@ -225,7 +234,7 @@ function dtoPedido(p: Pedido) {
   };
 }
 
-export function criarApp({ db, config, google, push = new ServicoPush(db, config), agora = () => new Date() }: Dependencias) {
+export function criarApp({ db, config, google, push = new ServicoPush(db, config), comprovantes = new ArquivosComprovante(config.comprovantesDir), agora = () => new Date() }: Dependencias) {
   const repo = new Repo(db);
   const ultimoTestePush = new Map<number, number>();
   repo.sincronizarPessoasGoogle(config.adminEmails);
@@ -293,7 +302,7 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
 
   const limite = (maxSize: number) =>
     bodyLimit({ maxSize, onError: () => { throw new ErroHttp(400, 'MUITO_GRANDE', 'Dados grandes demais.'); } });
-  app.use('/api/*', async (c, next) => (c.req.path === '/api/admin/importar' ? limite(LIMITE_BACKUP) : limite(LIMITE_JSON))(c, next));
+  app.use('/api/*', async (c, next) => (c.req.path === '/api/admin/importar' ? limite(LIMITE_BACKUP) : ROTA_COMPROVANTE.test(c.req.path) ? limite(LIMITE_COMPROVANTE) : limite(LIMITE_JSON))(c, next));
 
   // CSRF: o retorno do Google por redirecionamento tem verificação própria.
   app.use('/api/*', async (c, next) => {
@@ -423,23 +432,61 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
     });
   });
 
-  app.post('/api/devedor/emprestimos/:id/pagamento-informado', (c) => {
+  app.post('/api/devedor/emprestimos/:id/pagamento-informado', async (c) => {
     const v = emprestimoDoDevedor(c);
     if (v.valorPagarAgora <= 0) throw new ErroHttp(409, 'NADA_A_PAGAR', 'Não há valor em aberto.');
-    // O valor vem do servidor: é o mesmo do QR Code, e o devedor não consegue informar outro.
-    const txid = `EMP${v.emprestimo.id}D${hoje().replaceAll('-', '')}`;
-    const r = repo.criarAvisoPagamento(v.emprestimo.id, v.valorPagarAgora, txid, agora());
-    if (r === 'aberto') throw new ErroHttp(409, 'AVISO_ABERTO', 'Este pagamento já foi informado e aguarda confirmação.');
-    if (r === 'limite') throw new ErroHttp(409, 'AVISO_LIMITE', 'Muitos avisos em 24 horas. Fale com o credor.');
+    const erroAviso = (motivo: 'aberto' | 'limite') =>
+      motivo === 'aberto'
+        ? new ErroHttp(409, 'AVISO_ABERTO', 'Este pagamento já foi informado e aguarda confirmação.')
+        : new ErroHttp(409, 'AVISO_LIMITE', 'Muitos avisos em 24 horas. Fale com o credor.');
+    const bloqueio = repo.bloqueioAvisoPagamento(v.emprestimo.id, agora());
+    if (bloqueio) throw erroAviso(bloqueio);
+
+    let arquivo: unknown;
+    try {
+      arquivo = (await c.req.parseBody()).arquivo;
+    } catch {
+      throw new ErroHttp(400, 'COMPROVANTE_INVALIDO', 'Não foi possível ler o comprovante.');
+    }
+    if (!(arquivo instanceof File) || arquivo.size === 0) throw new ErroHttp(400, 'COMPROVANTE_OBRIGATORIO', 'Envie o comprovante do Pix.');
+    if (arquivo.size > MAX_COMPROVANTE_BYTES) throw new ErroHttp(400, 'COMPROVANTE_GRANDE', 'O comprovante pode ter até 8 MB.');
+    const bytes = new Uint8Array(await arquivo.arrayBuffer());
+    const tipo = detectarTipoComprovante(bytes);
+    if (!tipo) throw new ErroHttp(400, 'COMPROVANTE_TIPO', 'Envie uma imagem JPG, PNG ou WEBP, ou um PDF.');
+
+    const nome = await comprovantes.salvar(bytes, tipo);
+    let r: number | 'aberto' | 'limite';
+    try {
+      // O valor vem do servidor: é o mesmo do QR Code, e o devedor não consegue informar outro.
+      const txid = `EMP${v.emprestimo.id}D${hoje().replaceAll('-', '')}`;
+      r = repo.criarAvisoPagamento(
+        v.emprestimo.id,
+        v.valorPagarAgora,
+        txid,
+        { arquivo: nome, tipo: tipo.mime, tamanho: bytes.length, expiraEm: dataExpiracaoComprovante(hoje()) },
+        agora(),
+      );
+    } catch (e) {
+      await comprovantes.removerVarios([nome]);
+      throw e;
+    }
+    if (typeof r !== 'number') {
+      await comprovantes.removerVarios([nome]);
+      throw erroAviso(r);
+    }
     push.paraAdmins({ titulo: 'Pagamento informado', corpo: 'Confira no banco e confirme no app.', url: '/pedidos', tag: `aviso-${r}` });
     return c.json({ id: r }, 201);
   });
-  app.post('/api/devedor/avisos-pagamento/:id/cancelar', (c) => {
+  app.post('/api/devedor/avisos-pagamento/:id/cancelar', async (c) => {
     const id = idParam(c);
     const a = repo.avisoPagamento(id);
     const e = a ? repo.emprestimo(a.emprestimoId) : null;
     if (!a || !e || e.pessoaId !== doDevedor(c)) throw naoEncontrado();
     if (!repo.cancelarAvisoPagamento(id, agora())) throw new ErroHttp(409, 'AVISO_DECIDIDO', 'Este pagamento já foi respondido.');
+    if (a.comprovanteArquivo) {
+      await comprovantes.removerVarios([a.comprovanteArquivo]);
+      repo.marcarComprovanteRemovido(id, agora());
+    }
     return c.json({ ok: true });
   });
 
@@ -504,8 +551,11 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
     if (!repo.atualizarPessoa(id, d)) throw naoEncontrado();
     return c.json({ ok: true });
   });
-  app.delete('/api/admin/pessoas/:id', (c) => {
-    if (!repo.removerPessoa(idParam(c))) throw naoEncontrado();
+  app.delete('/api/admin/pessoas/:id', async (c) => {
+    const id = idParam(c);
+    const arquivos = repo.arquivosDaPessoa(id);
+    if (!repo.removerPessoa(id)) throw naoEncontrado();
+    await comprovantes.removerVarios(arquivos);
     return c.body(null, 204);
   });
 
@@ -527,8 +577,11 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
     if (!repo.atualizarEmprestimo(id, d)) throw naoEncontrado();
     return c.json({ ok: true });
   });
-  app.delete('/api/admin/emprestimos/:id', (c) => {
-    if (!repo.removerEmprestimo(idParam(c))) throw naoEncontrado();
+  app.delete('/api/admin/emprestimos/:id', async (c) => {
+    const id = idParam(c);
+    const arquivos = repo.arquivosDoEmprestimo(id);
+    if (!repo.removerEmprestimo(id)) throw naoEncontrado();
+    await comprovantes.removerVarios(arquivos);
     return c.body(null, 204);
   });
 
@@ -613,6 +666,18 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
     return c.json({ ok: true });
   });
 
+  // Nunca devolve o nome do arquivo em disco.
+  const dtoComprovante = (a: AvisoPagamento) =>
+    a.comprovanteTipo
+      ? {
+          tipo: a.comprovanteTipo,
+          tamanho: a.comprovanteTamanho,
+          expiraEm: a.comprovanteExpiraEm,
+          disponivel: !!a.comprovanteArquivo,
+          removidoEm: a.comprovanteRemovidoEm,
+        }
+      : null;
+
   const dtoAvisoAdmin = (a: AvisoPagamento) => {
     const e = repo.emprestimo(a.emprestimoId)!;
     const p = repo.pessoa(e.pessoaId)!;
@@ -623,6 +688,7 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
       valorCentavos: a.valorCentavos,
       txid: a.txid,
       criadoEm: a.criadoEm,
+      comprovante: dtoComprovante(a),
       pessoa: { id: p.id, nome: p.nome, sobrenome: p.sobrenome, telefone: p.telefone, email: p.email, avatarUrl: p.avatarUrl },
     };
   };
@@ -634,6 +700,31 @@ export function criarApp({ db, config, google, push = new ServicoPush(db, config
   };
 
   app.get('/api/admin/avisos-pagamento', (c) => c.json({ avisos: repo.avisosPendentes().map(dtoAvisoAdmin), hoje: hoje() }));
+  app.get('/api/admin/avisos-pagamento/:id/comprovante', async (c) => {
+    const a = repo.avisoPagamento(idParam(c));
+    if (!a?.comprovanteArquivo || !a.comprovanteTipo) throw naoEncontrado();
+    const bytes = await comprovantes.ler(a.comprovanteArquivo);
+    if (!bytes) throw naoEncontrado();
+    const extensao = a.comprovanteArquivo.split('.').pop();
+    // PDF é sempre baixado, para nenhum conteúdo enviado pelo usuário rodar na origem do app.
+    const disposicao = a.comprovanteTipo === 'application/pdf' ? 'attachment' : 'inline';
+    c.header('Content-Type', a.comprovanteTipo);
+    c.header('Content-Disposition', `${disposicao}; filename="comprovante-${a.id}.${extensao}"`);
+    return c.body(bytes);
+  });
+  app.get('/api/admin/emprestimos/:id/comprovantes', (c) => {
+    const id = idParam(c);
+    if (!repo.emprestimo(id)) throw naoEncontrado();
+    return c.json({
+      comprovantes: repo.avisosComComprovante(id).map((a) => ({
+        id: a.id,
+        status: a.status,
+        valorCentavos: a.valorCentavos,
+        criadoEm: a.criadoEm,
+        comprovante: dtoComprovante(a),
+      })),
+    });
+  });
   app.post('/api/admin/avisos-pagamento/:id/confirmar', async (c) => {
     const id = idParam(c);
     const a = avisoAberto(id);

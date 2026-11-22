@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, test } from 'node:test';
+import { after, beforeEach, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { criarApp } from '../src/app.ts';
 import { ErroGoogle, hashToken } from '../src/auth.ts';
 import { fazerBackup } from '../src/backup.ts';
 import { lerConfig } from '../src/config.ts';
+import { ArquivosComprovante, detectarTipoComprovante, LimpezaComprovantes, MAX_COMPROVANTE_BYTES } from '../src/comprovantes.ts';
 import { abrirBanco } from '../src/db.ts';
 import { endpointPermitido, ServicoPush, type InscricaoPush, type MensagemPush, type ResultadoPush } from '../src/push.ts';
 import { Repo } from '../src/repo.ts';
@@ -19,11 +20,21 @@ const EMAILS_TESTE = {
 } as const;
 
 const ORIGEM = 'http://localhost:5173';
+const RAIZ_COMPROVANTES = mkdtempSync(join(tmpdir(), 'emprestimos-comprovantes-'));
+after(() => rmSync(RAIZ_COMPROVANTES, { recursive: true, force: true }));
+let pastasComprovantes = 0;
+
+const JPG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 1]);
+const PDF = new TextEncoder().encode('%PDF-1.7\nconteudo');
 const AGORA = new Date('2026-06-15T15:00:00Z');
 
 function montar(extra: NodeJS.ProcessEnv = {}) {
+  const pastaComprovantes = join(RAIZ_COMPROVANTES, String(++pastasComprovantes));
   const config = lerConfig({
     NODE_ENV: 'test',
+    COMPROVANTES_DIR: pastaComprovantes,
     ADMIN_EMAILS: EMAILS_TESTE.admin,
     APP_ORIGINS: ORIGEM,
     GOOGLE_CLIENT_ID: 'cliente',
@@ -53,7 +64,8 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
       },
     },
   });
-  const app = criarApp({ db, config, google, push, agora: () => momento });
+  const comprovantes = new ArquivosComprovante(pastaComprovantes);
+  const app = criarApp({ db, config, google, push, comprovantes, agora: () => momento });
   const repo = new Repo(db);
   repo.salvarPix({ chave: 'chave@teste.local', nome: 'Credor', cidade: 'Sao Paulo' }, EMAILS_TESTE.admin);
   const a = repo.criarPessoa({ nome: 'Ana', sobrenome: 'A', telefone: '1', email: EMAILS_TESTE.devedorA });
@@ -71,12 +83,19 @@ function montar(extra: NodeJS.ProcessEnv = {}) {
     if (opts.corpo !== undefined) headers['content-type'] = 'application/json';
     return app.request(caminho, { method: metodo, headers, body: opts.corpo === undefined ? undefined : JSON.stringify(opts.corpo) });
   }
+  async function enviarComprovante(cookie: string, emprestimoId: number, bytes: Uint8Array | null = JPG, nome = 'comprovante.jpg', tipo = 'image/jpeg', extra: Record<string, string> = {}) {
+    const form = new FormData();
+    if (bytes) form.append('arquivo', new File([bytes as Uint8Array<ArrayBuffer>], nome, { type: tipo }));
+    for (const [k, v] of Object.entries(extra)) form.append(k, v);
+    return app.request(`/api/devedor/emprestimos/${emprestimoId}/pagamento-informado`, { method: 'POST', headers: { cookie, origin: ORIGEM }, body: form });
+  }
+  const arquivosEmDisco = () => (existsSync(pastaComprovantes) ? readdirSync(pastaComprovantes) : []);
   async function login(email: string) {
     const r = await chamar('POST', '/api/auth/google', { corpo: { credential: `valido:${email}` } });
     assert.equal(r.status, 200);
     return r.headers.get('set-cookie')!.split(';')[0]!;
   }
-  return { app, db, repo, identidades, push, enviados, respostasPush, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
+  return { app, db, repo, identidades, push, enviados, respostasPush, comprovantes, pastaComprovantes, enviarComprovante, arquivosEmDisco, chamar, login, empA, empB, pagB, a, b, avancar: (d: Date) => (momento = d) };
 }
 
 type Ctx = ReturnType<typeof montar>;
@@ -730,7 +749,7 @@ describe('pagamento informado pelo devedor', () => {
   let admin: string;
   let ana: string;
   let bruno: string;
-  const informar = (cookie = ana, id = t.empA) => t.chamar('POST', `/api/devedor/emprestimos/${id}/pagamento-informado`, { cookie });
+  const informar = (cookie = ana, id = t.empA) => t.enviarComprovante(cookie, id);
   const novo = async () => ((await (await informar()).json()) as { id: number }).id;
   const saldo = () => t.repo.visaoPorId(t.empA, '2026-06-15')!.consolidado.saldo.saldo;
   beforeEach(async () => {
@@ -757,7 +776,7 @@ describe('pagamento informado pelo devedor', () => {
   });
 
   test('o devedor não escolhe o valor, não repete e não informa dívida de outro', async () => {
-    assert.equal((await t.chamar('POST', `/api/devedor/emprestimos/${t.empA}/pagamento-informado`, { cookie: ana, corpo: { valorCentavos: 1 } })).status, 201);
+    assert.equal((await t.enviarComprovante(ana, t.empA, JPG, 'c.jpg', 'image/jpeg', { valorCentavos: '1' })).status, 201);
     assert.equal(t.repo.avisoPendente(t.empA)!.valorCentavos, 150000);
     assert.equal((await informar()).status, 409);
     assert.equal((await informar(ana, t.empB)).status, 404);
@@ -835,6 +854,154 @@ describe('pagamento informado pelo devedor', () => {
     t.enviados.length = 0;
     await t.push.rodarLembretes(new Date('2026-07-10T12:30:00Z'));
     assert.ok(!t.enviados.some((e) => e.endpoint === endpoint('ana')));
+  });
+});
+
+describe('comprovantes', () => {
+  const novaData = (d: string) => new Date(`${d}T15:00:00Z`);
+  let t: Ctx;
+  let admin: string;
+  let ana: string;
+  let bruno: string;
+  const enviar = async (bytes: Uint8Array = JPG, nome = 'c.jpg', tipo = 'image/jpeg') => {
+    const r = await t.enviarComprovante(ana, t.empA, bytes, nome, tipo);
+    assert.equal(r.status, 201);
+    return ((await r.json()) as { id: number }).id;
+  };
+  const rota = (id: number) => `/api/admin/avisos-pagamento/${id}/comprovante`;
+  const limpeza = () => new LimpezaComprovantes(t.repo, t.comprovantes);
+  beforeEach(async () => {
+    t = montar();
+    admin = await t.login(EMAILS_TESTE.admin);
+    ana = await t.login(EMAILS_TESTE.devedorA);
+    bruno = await t.login(EMAILS_TESTE.devedorB);
+  });
+
+  test('reconhece os formatos pelo conteúdo', () => {
+    assert.equal(detectarTipoComprovante(JPG)?.mime, 'image/jpeg');
+    assert.equal(detectarTipoComprovante(PNG)?.mime, 'image/png');
+    assert.equal(detectarTipoComprovante(WEBP)?.mime, 'image/webp');
+    assert.equal(detectarTipoComprovante(PDF)?.mime, 'application/pdf');
+    for (const ruim of ['<svg onload=alert(1)>', '<html>', 'GIF89a', 'texto']) assert.equal(detectarTipoComprovante(new TextEncoder().encode(ruim)), null);
+  });
+
+  test('o comprovante é obrigatório', async () => {
+    assert.equal((await t.enviarComprovante(ana, t.empA, null)).status, 400);
+    assert.equal((await t.enviarComprovante(ana, t.empA, new Uint8Array())).status, 400);
+    assert.equal(t.repo.avisoPendente(t.empA), null);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+  });
+
+  test('recusa arquivo disfarçado e arquivo grande', async () => {
+    const falso = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    assert.equal((await t.enviarComprovante(ana, t.empA, falso, 'foto.png', 'image/png')).status, 400);
+    const grande = new Uint8Array(MAX_COMPROVANTE_BYTES + 1);
+    grande.set(JPG);
+    assert.equal((await t.enviarComprovante(ana, t.empA, grande)).status, 400);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+  });
+
+  for (const [nome, bytes, mime] of [['jpg', JPG, 'image/jpeg'], ['png', PNG, 'image/png'], ['webp', WEBP, 'image/webp'], ['pdf', PDF, 'application/pdf']] as const) {
+    test(`admin abre comprovante ${nome}, com o tipo real do conteúdo`, async () => {
+      const id = await enviar(bytes, '../../etc/passwd', 'text/html');
+      const r = await t.chamar('GET', rota(id), { cookie: admin });
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get('content-type'), mime);
+      assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(r.headers.get('cache-control'), 'no-store');
+      assert.ok(r.headers.get('content-disposition')!.startsWith(mime === 'application/pdf' ? 'attachment' : 'inline'));
+      assert.deepEqual(new Uint8Array(await r.arrayBuffer()), bytes);
+      assert.match(t.arquivosEmDisco()[0]!, /^[a-f0-9]{48}\.(jpg|png|webp|pdf)$/);
+    });
+  }
+
+  test('só admin acessa e o nome em disco nunca aparece', async () => {
+    const id = await enviar();
+    assert.equal((await t.chamar('GET', rota(id), { cookie: ana })).status, 403);
+    assert.equal((await t.chamar('GET', rota(id), { cookie: bruno })).status, 403);
+    assert.equal((await t.chamar('GET', rota(id))).status, 401);
+    const disco = t.arquivosEmDisco()[0]!;
+    for (const [c, url] of [[admin, '/api/admin/avisos-pagamento'], [admin, `/api/admin/emprestimos/${t.empA}/comprovantes`], [ana, `/api/devedor/emprestimos/${t.empA}`]] as const) {
+      assert.ok(!(await (await t.chamar('GET', url, { cookie: c })).text()).includes(disco));
+    }
+  });
+
+  test('não grava arquivo quando já existe aviso aberto', async () => {
+    await enviar();
+    assert.equal((await t.enviarComprovante(ana, t.empA, PNG, 'c.png', 'image/png')).status, 409);
+    assert.equal(t.arquivosEmDisco().length, 1);
+  });
+
+  test('cancelar o aviso apaga o arquivo', async () => {
+    const id = await enviar();
+    await t.chamar('POST', `/api/devedor/avisos-pagamento/${id}/cancelar`, { cookie: ana });
+    assert.deepEqual(t.arquivosEmDisco(), []);
+    assert.equal((await t.chamar('GET', rota(id), { cookie: admin })).status, 404);
+  });
+
+  test('excluir empréstimo ou pessoa apaga os arquivos', async () => {
+    await enviar();
+    assert.equal((await t.chamar('DELETE', `/api/admin/emprestimos/${t.empA}`, { cookie: admin })).status, 204);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+    assert.equal((await t.enviarComprovante(bruno, t.empB)).status, 201);
+    assert.equal((await t.chamar('DELETE', `/api/admin/pessoas/${t.b}`, { cookie: admin })).status, 204);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+  });
+
+  test('cron apaga só depois de 3 meses e mantém o histórico', async () => {
+    const id = await enviar();
+    await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/confirmar`, { cookie: admin, corpo: { data: '2026-06-15', valorCentavos: 150000 } });
+    assert.equal(t.repo.avisoPagamento(id)!.comprovanteExpiraEm, '2026-09-15');
+    assert.equal((await limpeza().executar(novaData('2026-09-14'))).removidos, 0);
+    assert.equal(t.arquivosEmDisco().length, 1);
+    assert.equal((await limpeza().executar(novaData('2026-09-15'))).removidos, 1);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+    assert.equal((await t.chamar('GET', rota(id), { cookie: admin })).status, 404);
+    const l = (await (await t.chamar('GET', `/api/admin/emprestimos/${t.empA}/comprovantes`, { cookie: admin })).json()) as { comprovantes: Array<{ status: string; comprovante: { disponivel: boolean; removidoEm: string } }> };
+    assert.equal(l.comprovantes[0]!.status, 'confirmado');
+    assert.equal(l.comprovantes[0]!.comprovante.disponivel, false);
+    assert.ok(l.comprovantes[0]!.comprovante.removidoEm);
+    assert.equal(t.repo.pagamentos(t.empA).filter((p) => p.valorCentavos === 150000).length, 1);
+    assert.equal((await limpeza().executar(novaData('2026-09-16'))).removidos, 0);
+  });
+
+  test('cron não apaga comprovante aguardando conferência', async () => {
+    const id = await enviar();
+    assert.equal((await limpeza().executar(novaData('2026-12-20'))).removidos, 0);
+    assert.equal(t.arquivosEmDisco().length, 1);
+    await t.chamar('POST', `/api/admin/avisos-pagamento/${id}/recusar`, { cookie: admin, corpo: {} });
+    assert.equal((await limpeza().executar(novaData('2026-12-20'))).removidos, 1);
+    assert.deepEqual(t.arquivosEmDisco(), []);
+  });
+
+  test('cron remove órfãos antigos e preserva os recentes e outros arquivos', async () => {
+    mkdirSync(t.pastaComprovantes, { recursive: true });
+    const velho = `${'a'.repeat(48)}.jpg`;
+    const recente = `${'b'.repeat(48)}.png`;
+    for (const n of [velho, recente, 'nao-apagar.txt']) writeFileSync(join(t.pastaComprovantes, n), 'x');
+    const antigo = new Date(Date.now() - 48 * 3_600_000);
+    utimesSync(join(t.pastaComprovantes, velho), antigo, antigo);
+    utimesSync(join(t.pastaComprovantes, 'nao-apagar.txt'), antigo, antigo);
+    const id = await enviar();
+    const referenciado = t.repo.avisoPagamento(id)!.comprovanteArquivo!;
+    utimesSync(join(t.pastaComprovantes, referenciado), antigo, antigo);
+    assert.equal((await limpeza().executar(new Date())).orfaos, 1);
+    assert.deepEqual(t.arquivosEmDisco().sort(), [recente, referenciado, 'nao-apagar.txt'].sort());
+  });
+
+  test('cron roda uma vez por dia a partir das 3h de Brasília', async () => {
+    const l = limpeza();
+    assert.equal(await l.executarSeDevido(new Date('2026-07-01T05:59:00Z')), null);
+    assert.ok(await l.executarSeDevido(new Date('2026-07-01T06:00:00Z')));
+    assert.equal(await l.executarSeDevido(new Date('2026-07-01T20:00:00Z')), null);
+    assert.ok(await l.executarSeDevido(new Date('2026-07-02T06:01:00Z')));
+  });
+
+  test('final do mês não pula a validade', async () => {
+    t.avancar(new Date('2026-11-30T15:00:00Z'));
+    const r = await t.enviarComprovante(await t.login(EMAILS_TESTE.devedorA), t.empA);
+    const { id } = (await r.json()) as { id: number };
+    assert.equal(t.repo.avisoPagamento(id)!.comprovanteExpiraEm, '2027-02-28');
   });
 });
 

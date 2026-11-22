@@ -1,9 +1,12 @@
+import { dirname, join } from 'node:path';
+
 export interface Config {
   producao: boolean;
   porta: number;
   dbPath: string;
   webDist: string;
   backupDir: string | null;
+  comprovantesDir: string;
   googleClientId: string | null;
   adminEmails: Set<string>;
   origens: Set<string>;
@@ -29,12 +32,15 @@ export function lerConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!env.GOOGLE_CLIENT_ID) throw new Error('Defina GOOGLE_CLIENT_ID.');
   }
 
+  const dbPath = env.DB_PATH ?? './data/emprestimos.db';
+
   return {
     producao,
     porta: Number(env.PORT ?? 3000),
-    dbPath: env.DB_PATH ?? './data/emprestimos.db',
+    dbPath,
     webDist: env.WEB_DIST ?? '../web/dist',
     backupDir: env.BACKUP_DIR ?? null,
+    comprovantesDir: env.COMPROVANTES_DIR ?? join(dirname(dbPath), 'comprovantes'),
     googleClientId: env.GOOGLE_CLIENT_ID ?? null,
     adminEmails,
     origens,

@@ -241,3 +241,5 @@ button.link-txt { flex: none; min-height: 44px; padding: 0 4px; background: none
 .alerta-pagamento { background: var(--ambar-fundo); border-color: var(--ambar-vivo); color: var(--ambar-texto); }
 .aviso-pagamento { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--ambar-fundo); color: var(--ambar-texto); }
 .aviso-pagamento .link-txt { min-height: 36px; padding: 0; color: var(--ambar-texto); text-decoration: underline; }
+.comprovante-img { display: block; width: 100%; max-height: 62dvh; object-fit: contain; border-radius: 10px; background: var(--elevado); }
+.arquivo-escolhido { padding: 9px 11px; border-radius: 10px; background: var(--marca-fundo); color: #14278a; font-size: .85rem; }

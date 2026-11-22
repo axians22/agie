@@ -266,6 +266,11 @@ export function hojeBrasil(agora: Date = new Date()): DataISO {
   }).format(agora);
 }
 
+/** Hora de 0 a 23 no Brasil, para rotinas agendadas não dependerem do fuso do servidor. */
+export function horaBrasil(agora: Date = new Date()): number {
+  return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hourCycle: 'h23' }).format(agora));
+}
+
 const MAX_DIGITOS_MOEDA = 11;
 
 /** Máscara de dinheiro: só aceita dígitos e preenche da direita para a esquerda ("123" vira "1,23"). */

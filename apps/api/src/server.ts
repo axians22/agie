@@ -5,15 +5,18 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { criarApp } from './app.ts';
 import { criarVerificadorGoogle } from './auth.ts';
+import { ArquivosComprovante, LimpezaComprovantes } from './comprovantes.ts';
 import { fazerBackup } from './backup.ts';
 import { lerConfig } from './config.ts';
 import { abrirBanco } from './db.ts';
 import { criarServicoPush } from './push.ts';
+import { Repo } from './repo.ts';
 
 const config = lerConfig();
 const db = abrirBanco(config.dbPath);
 const push = criarServicoPush(db, config);
-const app = criarApp({ db, config, google: criarVerificadorGoogle(config.googleClientId), push });
+const comprovantes = new ArquivosComprovante(config.comprovantesDir);
+const app = criarApp({ db, config, google: criarVerificadorGoogle(config.googleClientId), push, comprovantes });
 
 const raizWeb = resolve(config.webDist);
 app.use('/sw.js', async (c, next) => {
@@ -52,5 +55,10 @@ if (push.disponivel) {
   setTimeout(lembrar, 30_000).unref();
   setInterval(lembrar, 15 * 60 * 1000).unref();
 }
+
+const limpeza = new LimpezaComprovantes(new Repo(db), comprovantes);
+const limparComprovantes = () => void limpeza.executarSeDevido().catch(() => console.error('falha na limpeza de comprovantes'));
+setTimeout(limparComprovantes, 60_000).unref();
+setInterval(limparComprovantes, 15 * 60 * 1000).unref();
 
 serve({ fetch: app.fetch, port: config.porta }, ({ port }) => console.log(`API em http://localhost:${port}`));

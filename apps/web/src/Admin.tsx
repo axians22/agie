@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, parsePercentual, type TipoMulta } from '@emprestimos/dominio';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
-import { api, mensagemErro, useDados, type AvisoPagamentoDto, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
+import { api, mensagemErro, useDados, type AvisoPagamentoDto, type ComprovanteDto, type ComprovanteEmprestimoDto, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
   CampoInteiro, ConvitePush, Notificacoes, useSincronizarPush, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
@@ -383,6 +383,7 @@ function EmprestimoDetalhe() {
                 </ul>
               )}
             </section>
+            <ComprovantesEmprestimo emprestimoId={id!} />
           </div>
           <div>
             <section>
@@ -551,6 +552,59 @@ function CartaoPedido({ p }: { p: PedidoDto }) {
   );
 }
 
+function VerComprovante({ avisoId, comprovante }: { avisoId: number; comprovante: ComprovanteDto | null }) {
+  const [aberto, setAberto] = useState(false);
+  if (!comprovante) return <p className="suave peq">Sem comprovante.</p>;
+  if (!comprovante.disponivel) return <p className="suave peq">Arquivo removido após 3 meses.</p>;
+  const url = `/api/admin/avisos-pagamento/${avisoId}/comprovante`;
+  if (comprovante.tipo === 'application/pdf') {
+    return <a className="btn sec" href={url} download={`comprovante-${avisoId}.pdf`}>Baixar comprovante em PDF</a>;
+  }
+  return (
+    <>
+      <button className="btn sec" onClick={() => setAberto(true)}>Ver comprovante</button>
+      {aberto && (
+        <Modal titulo="Comprovante" aoFechar={() => setAberto(false)}>
+          <img className="comprovante-img" src={url} alt="Comprovante do pagamento" />
+          <a className="btn sec" href={url} target="_blank" rel="noreferrer">Abrir em tamanho real</a>
+          <button className="btn sec" onClick={() => setAberto(false)}>Fechar</button>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+const STATUS_COMPROVANTE: Record<ComprovanteEmprestimoDto['status'], [string, string]> = {
+  pendente: ['aviso', 'Aguardando'],
+  confirmado: ['ok', 'Confirmado'],
+  recusado: ['ruim', 'Recusado'],
+};
+
+function ComprovantesEmprestimo({ emprestimoId }: { emprestimoId: string }) {
+  const { dados } = useDados<{ comprovantes: ComprovanteEmprestimoDto[] }>(`/admin/emprestimos/${emprestimoId}/comprovantes`);
+  if (!dados?.comprovantes.length) return null;
+  return (
+    <section>
+      <h2>Comprovantes</h2>
+      <div className="grade">
+        {dados.comprovantes.map((c) => {
+          const [classe, texto] = STATUS_COMPROVANTE[c.status];
+          return (
+            <article key={c.id} className="cartao bloco-acoes">
+              <div className="linha"><strong>{moeda(c.valorCentavos)}</strong><span className={`selo ${classe}`}>{texto}</span></div>
+              <p className="suave peq">
+                Enviado em {dataBr(c.criadoEm)}
+                {c.comprovante?.disponivel && c.status !== 'pendente' ? ` · Disponível até ${dataBr(c.comprovante.expiraEm)}` : ''}
+              </p>
+              <VerComprovante avisoId={c.id} comprovante={c.comprovante} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function CartaoAvisoPagamento({ a, hoje, aoMudar }: { a: AvisoPagamentoDto; hoje: string; aoMudar: () => void }) {
   const avisar = useAviso();
   const nome = nomePessoa(a.pessoa);
@@ -597,6 +651,7 @@ function CartaoAvisoPagamento({ a, hoje, aoMudar }: { a: AvisoPagamentoDto; hoje
         <strong className="dir">{moeda(a.valorCentavos)}</strong>
       </div>
       <p className="suave peq quebra">Informado em {dataBr(a.criadoEm)} · Identificador {a.txid}</p>
+      <VerComprovante avisoId={a.id} comprovante={a.comprovante} />
       <div className="grade2">
         <button className="btn perigo" onClick={() => setModo('recusar')}>Recusar</button>
         <button className="btn" onClick={() => setModo('confirmar')}>Confirmar</button>

@@ -19,8 +19,9 @@ export async function api<T = unknown>(metodo: string, caminho: string, corpo?: 
     r = await fetch(`/api${caminho}`, {
       method: metodo,
       credentials: 'same-origin',
-      headers: corpo === undefined ? undefined : { 'content-type': 'application/json' },
-      body: corpo === undefined ? undefined : JSON.stringify(corpo),
+      // Em FormData, o navegador define o content-type com o separador do arquivo.
+      headers: corpo === undefined || corpo instanceof FormData ? undefined : { 'content-type': 'application/json' },
+      body: corpo === undefined ? undefined : corpo instanceof FormData ? corpo : JSON.stringify(corpo),
     });
   } catch {
     throw new ErroApi(0, 'SEM_CONEXAO', 'Sem conexão. Verifique sua internet e tente de novo.');
@@ -123,6 +124,22 @@ export interface PedidoDto {
   pessoa?: PessoaDto;
 }
 
+export interface ComprovanteDto {
+  tipo: string;
+  tamanho: number;
+  expiraEm: string;
+  disponivel: boolean;
+  removidoEm: string | null;
+}
+
+export interface ComprovanteEmprestimoDto {
+  id: number;
+  status: 'pendente' | 'confirmado' | 'recusado';
+  valorCentavos: number;
+  criadoEm: string;
+  comprovante: ComprovanteDto | null;
+}
+
 export interface AvisoPagamentoDto {
   id: number;
   emprestimoId: number;
@@ -130,6 +147,7 @@ export interface AvisoPagamentoDto {
   valorCentavos: number;
   txid: string;
   criadoEm: string;
+  comprovante: ComprovanteDto | null;
   pessoa: PessoaDto;
 }
 

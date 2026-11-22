@@ -42,8 +42,11 @@ depois disso. O e-mail de `ADMIN_EMAILS` é o administrador principal: só ele a
 O usuário pede um empréstimo em **Pedidos**. O admin aprova ou recusa, e a aprovação gera o empréstimo, as parcelas e o
 QR Code. O backup JSON não inclui os pedidos; o backup diário do banco inclui.
 
-O Pix estático não avisa o app sobre o recebimento. O devedor toca em **Já paguei**, o admin recebe o aviso, confere no
-banco e confirma; só então o pagamento é registrado.
+O Pix estático não avisa o app sobre o recebimento. O devedor toca em **Já paguei** e envia o comprovante em imagem ou
+PDF (até 8 MB). O admin recebe o aviso, confere no banco e confirma; só então o pagamento é registrado.
+
+Os comprovantes ficam em `/data/comprovantes`, fora do backup do banco. Uma rotina diária, às 3h de Brasília, apaga os
+arquivos com mais de 3 meses e mantém o histórico do pagamento. Comprovante ainda aguardando conferência não é apagado.
 
 As notificações usam Web Push e não exigem configuração: as chaves são criadas no primeiro início e ficam no volume
 `/data`. Cada pessoa ativa em **Config**. No iPhone, é preciso iOS 16.4 ou mais novo e o app na Tela de Início.

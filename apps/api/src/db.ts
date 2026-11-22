@@ -134,6 +134,14 @@ const MIGRACOES = [
   CREATE INDEX avisos_pagamento_status ON avisos_pagamento (status, id);
   CREATE UNIQUE INDEX avisos_pagamento_um_pendente ON avisos_pagamento (emprestimo_id) WHERE status = 'pendente';
   `,
+  `
+  ALTER TABLE avisos_pagamento ADD COLUMN comprovante_arquivo TEXT;
+  ALTER TABLE avisos_pagamento ADD COLUMN comprovante_tipo TEXT;
+  ALTER TABLE avisos_pagamento ADD COLUMN comprovante_tamanho INTEGER;
+  ALTER TABLE avisos_pagamento ADD COLUMN comprovante_expira_em TEXT;
+  ALTER TABLE avisos_pagamento ADD COLUMN comprovante_removido_em TEXT;
+  CREATE INDEX avisos_pagamento_comprovante ON avisos_pagamento (comprovante_expira_em) WHERE comprovante_arquivo IS NOT NULL;
+  `,
 ];
 
 export function abrirBanco(caminho: string): DatabaseSync {

@@ -99,9 +99,23 @@ export interface AvisoPagamento {
   status: StatusAvisoPagamento;
   motivo: string | null;
   criadoEm: string;
+  comprovanteArquivo: string | null;
+  comprovanteTipo: string | null;
+  comprovanteTamanho: number | null;
+  comprovanteExpiraEm: string | null;
+  comprovanteRemovidoEm: string | null;
 }
 
-const C_AVISO = `id, emprestimo_id AS emprestimoId, valor_centavos AS valorCentavos, txid, status, motivo, criado_em AS criadoEm`;
+export interface DadosComprovante {
+  arquivo: string;
+  tipo: string;
+  tamanho: number;
+  expiraEm: string;
+}
+
+const C_AVISO = `id, emprestimo_id AS emprestimoId, valor_centavos AS valorCentavos, txid, status, motivo, criado_em AS criadoEm,
+  comprovante_arquivo AS comprovanteArquivo, comprovante_tipo AS comprovanteTipo, comprovante_tamanho AS comprovanteTamanho,
+  comprovante_expira_em AS comprovanteExpiraEm, comprovante_removido_em AS comprovanteRemovidoEm`;
 const MAX_AVISOS_24H = 5;
 
 export interface DadosPixConfig {
@@ -293,17 +307,58 @@ export class Repo {
   contarAvisosPendentes(): number {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM avisos_pagamento WHERE status = 'pendente'").get() as { n: number }).n;
   }
-  criarAvisoPagamento(emprestimoId: number, valorCentavos: number, txid: string, agora: Date): number | 'aberto' | 'limite' {
+  /** Diz por que não dá para informar um pagamento agora, ou null se pode. */
+  bloqueioAvisoPagamento(emprestimoId: number, agora: Date): 'aberto' | 'limite' | null {
+    if (this.avisoPendente(emprestimoId)) return 'aberto';
+    const desde = new Date(agora.getTime() - 86_400_000).toISOString();
+    const { n } = this.db.prepare('SELECT COUNT(*) AS n FROM avisos_pagamento WHERE emprestimo_id = ? AND criado_em > ?').get(emprestimoId, desde) as { n: number };
+    return n >= MAX_AVISOS_24H ? 'limite' : null;
+  }
+  criarAvisoPagamento(emprestimoId: number, valorCentavos: number, txid: string, comprovante: DadosComprovante, agora: Date): number | 'aberto' | 'limite' {
     return transacao(this.db, () => {
-      if (this.avisoPendente(emprestimoId)) return 'aberto';
-      const desde = new Date(agora.getTime() - 86_400_000).toISOString();
-      const { n } = this.db.prepare('SELECT COUNT(*) AS n FROM avisos_pagamento WHERE emprestimo_id = ? AND criado_em > ?').get(emprestimoId, desde) as { n: number };
-      if (n >= MAX_AVISOS_24H) return 'limite';
+      const bloqueio = this.bloqueioAvisoPagamento(emprestimoId, agora);
+      if (bloqueio) return bloqueio;
       const r = this.db
-        .prepare('INSERT INTO avisos_pagamento (emprestimo_id, valor_centavos, txid, criado_em) VALUES (?, ?, ?, ?)')
-        .run(emprestimoId, valorCentavos, txid, agora.toISOString());
+        .prepare(
+          `INSERT INTO avisos_pagamento (emprestimo_id, valor_centavos, txid, criado_em, comprovante_arquivo, comprovante_tipo, comprovante_tamanho, comprovante_expira_em)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(emprestimoId, valorCentavos, txid, agora.toISOString(), comprovante.arquivo, comprovante.tipo, comprovante.tamanho, comprovante.expiraEm);
       return Number(r.lastInsertRowid);
     });
+  }
+  avisosComComprovante(emprestimoId: number): AvisoPagamento[] {
+    return this.db
+      .prepare(`SELECT ${C_AVISO} FROM avisos_pagamento WHERE emprestimo_id = ? AND comprovante_tipo IS NOT NULL AND status != 'cancelado' ORDER BY id DESC`)
+      .all(emprestimoId) as unknown as AvisoPagamento[];
+  }
+  comprovantesVencidos(hoje: string): Array<{ id: number; arquivo: string }> {
+    return this.db
+      .prepare(
+        `SELECT id, comprovante_arquivo AS arquivo FROM avisos_pagamento
+         WHERE comprovante_arquivo IS NOT NULL AND comprovante_expira_em <= ? AND status != 'pendente' ORDER BY id`,
+      )
+      .all(hoje) as Array<{ id: number; arquivo: string }>;
+  }
+  marcarComprovanteRemovido(id: number, agora: Date): void {
+    this.db.prepare('UPDATE avisos_pagamento SET comprovante_arquivo = NULL, comprovante_removido_em = ? WHERE id = ?').run(agora.toISOString(), id);
+  }
+  arquivosComprovante(): Set<string> {
+    const linhas = this.db.prepare('SELECT comprovante_arquivo AS arquivo FROM avisos_pagamento WHERE comprovante_arquivo IS NOT NULL').all() as Array<{ arquivo: string }>;
+    return new Set(linhas.map((l) => l.arquivo));
+  }
+  arquivosDoEmprestimo(emprestimoId: number): string[] {
+    const linhas = this.db.prepare('SELECT comprovante_arquivo AS arquivo FROM avisos_pagamento WHERE emprestimo_id = ? AND comprovante_arquivo IS NOT NULL').all(emprestimoId) as Array<{ arquivo: string }>;
+    return linhas.map((l) => l.arquivo);
+  }
+  arquivosDaPessoa(pessoaId: number): string[] {
+    const linhas = this.db
+      .prepare(
+        `SELECT a.comprovante_arquivo AS arquivo FROM avisos_pagamento a JOIN emprestimos e ON e.id = a.emprestimo_id
+         WHERE e.pessoa_id = ? AND a.comprovante_arquivo IS NOT NULL`,
+      )
+      .all(pessoaId) as Array<{ arquivo: string }>;
+    return linhas.map((l) => l.arquivo);
   }
   cancelarAvisoPagamento(id: number, agora: Date): boolean {
     const r = this.db.prepare("UPDATE avisos_pagamento SET status = 'cancelado', decidido_em = ? WHERE id = ? AND status = 'pendente'").run(agora.toISOString(), id);

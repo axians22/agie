@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda } from '@emprestimos/dominio';
 import QRCode from 'qrcode';
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
@@ -109,6 +109,11 @@ function Atrasados() {
   );
 }
 
+const MAX_COMPROVANTE = 8 * 1024 * 1024;
+const TIPOS_COMPROVANTE = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
+const tamanhoArquivo = (bytes: number) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`);
+
 interface DadosPix {
   codigo: string;
   valorCentavos: number;
@@ -119,6 +124,8 @@ function PagarPix({ emprestimoId, aoFechar, aoInformar }: { emprestimoId: number
   const avisar = useAviso();
   const [confirmando, setConfirmando] = useState(false);
   const [informando, setInformando] = useState(false);
+  const [comprovante, setComprovante] = useState<File | null>(null);
+  const seletor = useRef<HTMLInputElement>(null);
   const [pix, setPix] = useState<DadosPix | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -149,16 +156,34 @@ function PagarPix({ emprestimoId, aoFechar, aoInformar }: { emprestimoId: number
     }
   };
 
+  const escolher = (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    e.target.value = '';
+    if (!f) return;
+    setErro(null);
+    if (f.type && !TIPOS_COMPROVANTE.includes(f.type)) {
+      setComprovante(null);
+      return setErro('Envie uma imagem JPG, PNG ou WEBP, ou um PDF.');
+    }
+    if (f.size === 0 || f.size > MAX_COMPROVANTE) {
+      setComprovante(null);
+      return setErro('O comprovante precisa ter até 8 MB.');
+    }
+    setComprovante(f);
+  };
+
   const informar = async () => {
+    if (!comprovante) return setErro('Escolha o comprovante do Pix.');
     setErro(null);
     setInformando(true);
     try {
-      await api('POST', `/devedor/emprestimos/${emprestimoId}/pagamento-informado`);
+      const form = new FormData();
+      form.append('arquivo', comprovante);
+      await api('POST', `/devedor/emprestimos/${emprestimoId}/pagamento-informado`, form);
       avisar('Pagamento informado ao credor.');
       aoInformar();
     } catch (x) {
       setErro(mensagemErro(x));
-      setConfirmando(false);
     } finally {
       setInformando(false);
     }
@@ -176,13 +201,17 @@ function PagarPix({ emprestimoId, aoFechar, aoInformar }: { emprestimoId: number
           <button className="btn" onClick={copiar}>{copia === 'ok' ? 'Código copiado ✓' : 'Copiar código Pix'}</button>
           {copia === 'falhou' && <p className="erro" role="alert">Não foi possível copiar. Toque no código abaixo e copie.</p>}
           <textarea className="pix-codigo" readOnly rows={3} value={pix.codigo} aria-label="Código Pix Copia e Cola" onFocus={(e) => e.target.select()} />
-          <p className="suave peq">Pague este valor exato e depois toque em Já paguei. A baixa aparece quando o credor confirmar o recebimento.</p>
+          <p className="suave peq">Pague este valor exato e depois envie o comprovante. A baixa aparece quando o credor confirmar o recebimento.</p>
           {!confirmando && <button className="btn" onClick={() => setConfirmando(true)}>Já paguei</button>}
           {confirmando && (
             <>
-              <p role="status"><strong>O Pix de {moeda(pix.valorCentavos)} já foi concluído no seu banco?</strong></p>
-              <button className="btn" disabled={informando} onClick={informar}>{informando ? 'Enviando...' : 'Sim, avisar o credor'}</button>
-              <button className="btn sec" disabled={informando} onClick={() => setConfirmando(false)}>Ainda não paguei</button>
+              <p role="status"><strong>Envie o comprovante do Pix de {moeda(pix.valorCentavos)}</strong></p>
+              <p className="suave peq">Imagem JPG, PNG ou WEBP, ou PDF, com até 8 MB.</p>
+              <input ref={seletor} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" hidden aria-label="Arquivo do comprovante" onChange={escolher} />
+              {comprovante && <p className="arquivo-escolhido quebra">{comprovante.name} · {tamanhoArquivo(comprovante.size)}</p>}
+              <button className="btn sec" disabled={informando} onClick={() => seletor.current?.click()}>{comprovante ? 'Trocar arquivo' : 'Escolher imagem ou PDF'}</button>
+              <button className="btn" disabled={informando || !comprovante} onClick={informar}>{informando ? 'Enviando...' : 'Enviar comprovante'}</button>
+              <button className="btn sec" disabled={informando} onClick={() => { setConfirmando(false); setComprovante(null); setErro(null); }}>Ainda não paguei</button>
             </>
           )}
         </>

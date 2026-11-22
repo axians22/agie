@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { hojeBrasil } from '@emprestimos/dominio';
+import { hojeBrasil, horaBrasil } from '@emprestimos/dominio';
 import webpush from 'web-push';
 import type { Config } from './config.ts';
 import { Repo } from './repo.ts';
@@ -55,10 +55,6 @@ function somarDias(iso: string, dias: number): string {
 
 function diasEntre(inicio: string, fim: string): number {
   return Math.round((Date.parse(`${fim}T00:00:00Z`) - Date.parse(`${inicio}T00:00:00Z`)) / (DIA_S * 1000));
-}
-
-function horaBrasil(agora: Date): number {
-  return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hourCycle: 'h23' }).format(agora));
 }
 
 const LEMBRETES = {
