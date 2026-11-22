@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { adicionaMeses, gerarParcelas, hojeBrasil, parseMoeda, parsePercentual, type TipoMulta } from '@emprestimos/dominio';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router';
-import { api, mensagemErro, useDados, type AvisoPagamentoDto, type ComprovanteDto, type ComprovanteEmprestimoDto, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
+import { api, baixarComprovante, mensagemErro, useDados, type AvisoPagamentoDto, type ComprovanteDto, type ComprovanteEmprestimoDto, type EmprestimoDto, type PagamentoDto, type PedidoDto, type PessoaDto, type Resumo, type Usuario } from './api.ts';
 import {
   CampoInteiro, ConvitePush, Notificacoes, useSincronizarPush, CampoMoeda, CampoPercentual, CartaoEmprestimo, Carregando, dataBr, Falha, Icone, InstalarApp, ListaParcelas, moeda, Modal, Navegacao, Progresso,
   reaisCampo, SeloEmprestimo, SeloPedido, Tela, textoEncargos, tituloEmprestimo, useAtualizacao, useAviso, Vazio,
@@ -552,13 +552,35 @@ function CartaoPedido({ p }: { p: PedidoDto }) {
   );
 }
 
+function BotaoBaixarComprovante({ avisoId, tipo, rotulo }: { avisoId: number; tipo: string; rotulo: string }) {
+  const [baixando, setBaixando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const baixar = async () => {
+    setBaixando(true);
+    setErro(null);
+    try {
+      await baixarComprovante(avisoId, tipo);
+    } catch (e) {
+      setErro(mensagemErro(e));
+    } finally {
+      setBaixando(false);
+    }
+  };
+  return (
+    <>
+      {erro && <p className="erro" role="alert">{erro}</p>}
+      <button type="button" className="btn sec" disabled={baixando} onClick={baixar}>{baixando ? 'Baixando...' : rotulo}</button>
+    </>
+  );
+}
+
 function VerComprovante({ avisoId, comprovante }: { avisoId: number; comprovante: ComprovanteDto | null }) {
   const [aberto, setAberto] = useState(false);
   if (!comprovante) return <p className="suave peq">Sem comprovante.</p>;
   if (!comprovante.disponivel) return <p className="suave peq">Arquivo removido após 3 meses.</p>;
   const url = `/api/admin/avisos-pagamento/${avisoId}/comprovante`;
   if (comprovante.tipo === 'application/pdf') {
-    return <a className="btn sec" href={url} download={`comprovante-${avisoId}.pdf`}>Baixar comprovante em PDF</a>;
+    return <BotaoBaixarComprovante avisoId={avisoId} tipo={comprovante.tipo} rotulo="Baixar comprovante em PDF" />;
   }
   return (
     <>
@@ -566,7 +588,7 @@ function VerComprovante({ avisoId, comprovante }: { avisoId: number; comprovante
       {aberto && (
         <Modal titulo="Comprovante" aoFechar={() => setAberto(false)}>
           <img className="comprovante-img" src={url} alt="Comprovante do pagamento" />
-          <a className="btn sec" href={url} target="_blank" rel="noreferrer">Abrir em tamanho real</a>
+          <BotaoBaixarComprovante avisoId={avisoId} tipo={comprovante.tipo} rotulo="Baixar comprovante" />
           <button className="btn sec" onClick={() => setAberto(false)}>Fechar</button>
         </Modal>
       )}

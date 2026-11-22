@@ -35,6 +35,37 @@ export async function api<T = unknown>(metodo: string, caminho: string, corpo?: 
   return dados as T;
 }
 
+const EXTENSAO_COMPROVANTE: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'application/pdf': 'pdf',
+};
+
+// Baixa pela sessão do app: no PWA instalado, um link comum abre fora dele e o cookie Strict não vai junto.
+export async function baixarComprovante(avisoId: number, tipo: string): Promise<void> {
+  let r: Response;
+  try {
+    r = await fetch(`/api/admin/avisos-pagamento/${avisoId}/comprovante`, { credentials: 'same-origin' });
+  } catch {
+    throw new ErroApi(0, 'SEM_CONEXAO', 'Sem conexão. Verifique sua internet e tente de novo.');
+  }
+  if (!r.ok) {
+    if (r.status === 401) window.dispatchEvent(new Event(EVENTO_SESSAO_EXPIRADA));
+    const dados = await r.json().catch(() => null);
+    throw new ErroApi(r.status, dados?.erro ?? 'ERRO', dados?.mensagem ?? 'Não foi possível baixar o comprovante.');
+  }
+  const url = URL.createObjectURL(await r.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `comprovante-${avisoId}.${EXTENSAO_COMPROVANTE[tipo] ?? 'bin'}`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // O celular pode demorar para começar a gravar o arquivo.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export function mensagemErro(e: unknown): string {
   return e instanceof Error ? e.message : 'Algo deu errado. Tente de novo.';
 }
